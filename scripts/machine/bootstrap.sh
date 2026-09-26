@@ -30,7 +30,7 @@
 #                   Core endpoint the box must reach.
 #
 # Final line on stdout is exactly one machine-readable capabilities marker:
-#   TAU_CAPS_JSON: {"arch":...,"cpus":...,"memMb":...,"diskGb":...,"kernel":...,"docker":"rootless","forwarding":"yes","browser":"available"}
+#   FICUS_CAPS_JSON: {"arch":...,"cpus":...,"memMb":...,"diskGb":...,"kernel":...,"docker":"rootless","forwarding":"yes","browser":"available"}
 # `browser` is "available" once verify_browser confirms Chromium's sandbox is ON
 # and the tau-browser service is live, else "unavailable" with a "browserReason"
 # token: install/setup — playwright_install_failed / chromium_download_failed /
@@ -80,9 +80,9 @@ PLAYWRIGHT_VERSION="1.58.2"
 BROWSER_DOWNLOAD_TIMEOUT_SECS=300
 BROWSER_DOWNLOAD_ATTEMPTS=2
 
-TAU_ROOT="/opt/tau"
-BUN_INSTALL_DIR="${TAU_ROOT}/bun"      # official installer target (dispatcher: "install to /opt/tau/bun")
-BUN_BIN_LINK="${TAU_ROOT}/bin/bun"     # stable invocation path used by box-provision's unit
+FICUS_ROOT="/opt/tau"
+BUN_INSTALL_DIR="${FICUS_ROOT}/bun"      # official installer target (dispatcher: "install to /opt/tau/bun")
+BUN_BIN_LINK="${FICUS_ROOT}/bin/bun"     # stable invocation path used by box-provision's unit
 
 # Prebaked-image marker (packages/machine-image/Dockerfile writes it as
 # {"bunVersion","nixVersion","devboxVersion"}). Present ONLY on a VM booted from
@@ -96,7 +96,7 @@ BUN_BIN_LINK="${TAU_ROOT}/bin/bun"     # stable invocation path used by box-prov
 # logs a WARNING (log_prebaked_decision). Absent on a BYO-SSH bare Ubuntu host
 # (full install path). Overridable via --marker-file for the
 # --print-prebaked-decision dry run ONLY.
-PREBAKED_MARKER="${TAU_ROOT}/prebaked"
+PREBAKED_MARKER="${FICUS_ROOT}/prebaked"
 
 # Multi-user nix lays its default profile here; the `nix` binary lives under it.
 # devbox lands on the standard system PATH so every box user can invoke it.
@@ -110,24 +110,24 @@ DEVBOX_BIN="/usr/local/bin/devbox"
 # See the browser-tools-in-sandbox spec §4.1/§4.2. install_browser installs the
 # packages + the sandbox hard gate + the real service (per-box BrowserContext,
 # token auth, caps — write_browser_service).
-TAU_BROWSER_USER="tau-browser"
-TAU_BROWSER_ROOT="${TAU_ROOT}/browser"
-TAU_BROWSER_HOME="${TAU_BROWSER_ROOT}/home"            # writable HOME for the service user
-TAU_BROWSER_BROWSERS_PATH="${TAU_BROWSER_ROOT}/ms-playwright"  # PLAYWRIGHT_BROWSERS_PATH
-TAU_BROWSER_SERVICE_JS="${TAU_BROWSER_ROOT}/service/tau-browser.js"
-TAU_BROWSER_VERIFY_JS="${TAU_BROWSER_ROOT}/service/verify-sandbox.js"
+FICUS_BROWSER_USER="tau-browser"
+FICUS_BROWSER_ROOT="${FICUS_ROOT}/browser"
+FICUS_BROWSER_HOME="${FICUS_BROWSER_ROOT}/home"            # writable HOME for the service user
+FICUS_BROWSER_BROWSERS_PATH="${FICUS_BROWSER_ROOT}/ms-playwright"  # PLAYWRIGHT_BROWSERS_PATH
+FICUS_BROWSER_SERVICE_JS="${FICUS_BROWSER_ROOT}/service/tau-browser.js"
+FICUS_BROWSER_VERIFY_JS="${FICUS_BROWSER_ROOT}/service/verify-sandbox.js"
 # The socket path (/run/tau-browser/sock, 0660 group tau-browser) is fixed in the
 # static unit + service program, not a shell constant.
-TAU_BROWSER_UNIT="/etc/systemd/system/tau-browser.service"
-TAU_BROWSER_APPARMOR="/etc/apparmor.d/tau-browser-chromium"
+FICUS_BROWSER_UNIT="/etc/systemd/system/tau-browser.service"
+FICUS_BROWSER_APPARMOR="/etc/apparmor.d/tau-browser-chromium"
 # Durable, machine-readable availability markers written by verify_browser. On a
 # host that CAN run the sandboxed browser: READY (timestamp), UNAVAILABLE removed.
 # On a host that CANNOT: UNAVAILABLE (reason token + timestamp + detail), READY
 # removed — browsing is disabled but the machine still comes up. These sit next
 # to the capabilities.browser field the control plane consumes (a human debugging
 # a VM reads them directly).
-TAU_BROWSER_READY_MARKER="${TAU_BROWSER_ROOT}/READY"
-TAU_BROWSER_UNAVAILABLE_MARKER="${TAU_BROWSER_ROOT}/UNAVAILABLE"
+FICUS_BROWSER_READY_MARKER="${FICUS_BROWSER_ROOT}/READY"
+FICUS_BROWSER_UNAVAILABLE_MARKER="${FICUS_BROWSER_ROOT}/UNAVAILABLE"
 
 # Browser availability, reported to the control plane via capabilities.browser
 # (print_capabilities). Set by install_browser/verify_browser; global so
@@ -252,7 +252,7 @@ make_dirs() {
   # /opt/tau/server and /opt/tau/cli receive core-pushed machine artifacts (the
   # sandbox-server bundle and the tau CLI); the push's `install -D` also creates
   # them, so pre-creating here is belt-and-braces.
-  "${SUDO[@]}" mkdir -p "${TAU_ROOT}/bin" "${TAU_ROOT}/server" "${TAU_ROOT}/cli"
+  "${SUDO[@]}" mkdir -p "${FICUS_ROOT}/bin" "${FICUS_ROOT}/server" "${FICUS_ROOT}/cli"
 }
 
 install_docker_packages() {
@@ -382,7 +382,7 @@ install_devbox() {
 # (browser-tools-in-sandbox spec §4.2). The Chromium sandbox stays ON (no
 # --no-sandbox).
 write_browser_service() {
-  "${SUDO[@]}" tee "${TAU_BROWSER_SERVICE_JS}" >/dev/null <<'BROWSER_SERVICE_JS'
+  "${SUDO[@]}" tee "${FICUS_BROWSER_SERVICE_JS}" >/dev/null <<'BROWSER_SERVICE_JS'
 // @ts-check
 // tau-browser.service program — per-box BrowserContext, token auth, caps
 // (browser-tools-in-sandbox spec §4.2, Phase 2). Serves a small JSON verb
@@ -398,7 +398,7 @@ write_browser_service() {
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 
-const SOCK = process.env.TAU_BROWSER_SOCK || '/run/tau-browser/sock'
+const SOCK = process.env.FICUS_BROWSER_SOCK || '/run/tau-browser/sock'
 // A SIBLING of /opt/tau/browser, not a child — install_browser recursively
 // chown/chmods /opt/tau/browser to root:root + a+rX (every box user must
 // read the browser binaries), which would world-expose token digests if they
@@ -564,16 +564,16 @@ export function createService(deps = {}) {
       return chromium.launch({ headless: true })
     })
   const now = deps.now || Date.now
-  const tokensDir = deps.tokensDir || process.env.TAU_BROWSER_TOKENS_DIR || DEFAULT_TOKENS_DIR
+  const tokensDir = deps.tokensDir || process.env.FICUS_BROWSER_TOKENS_DIR || DEFAULT_TOKENS_DIR
   // Docker-dev-only escape hatch (R-B17): the docker sandbox's box server runs as
   // a plain OS user (root) whose name never matches BOX_USER_RE, so the prod
   // box_<hex> gate would 401 every in-container browser call. When — and ONLY
-  // when — TAU_BROWSER_DEV_ALLOW_USER is set (prod NEVER sets it; the systemd
+  // when — FICUS_BROWSER_DEV_ALLOW_USER is set (prod NEVER sets it; the systemd
   // unit does not carry it), also accept a box user equal to it, still
   // constrained by isSafeTokenUser so the token filename can't traverse. With the
   // env unset the auth path is byte-identical to box_<hex>-only.
-  const devAllowUser = deps.devAllowUser || process.env.TAU_BROWSER_DEV_ALLOW_USER || ''
-  const memoryHighMb = deps.memoryHighMb || Number(process.env.TAU_BROWSER_MEMORY_HIGH_MB) || DEFAULT_MEMORY_HIGH_MB
+  const devAllowUser = deps.devAllowUser || process.env.FICUS_BROWSER_DEV_ALLOW_USER || ''
+  const memoryHighMb = deps.memoryHighMb || Number(process.env.FICUS_BROWSER_MEMORY_HIGH_MB) || DEFAULT_MEMORY_HIGH_MB
   // The SSRF host guard is injectable so an embedder whose browser has no more
   // network reach than the caller already has can turn it off (the host sandbox
   // runtime runs this engine in-process on the user's own machine, where the
@@ -858,7 +858,7 @@ export function createService(deps = {}) {
     const authHeader = req.headers.get('authorization') || ''
     const match = /^Bearer (.+)$/.exec(authHeader)
     // Prod gate: box_<hex> only. R-B17 dev escape hatch: additionally accept a
-    // user equal to the (prod-unset) TAU_BROWSER_DEV_ALLOW_USER, still
+    // user equal to the (prod-unset) FICUS_BROWSER_DEV_ALLOW_USER, still
     // filename-safe. isSafeTokenUser is redundant for BOX_USER_RE matches but
     // mandatory for the dev user before it reaches readFileSync below.
     const allowed =
@@ -1058,7 +1058,7 @@ BROWSER_SERVICE_JS
 # verify_browser). Launches headless Chromium WITHOUT --no-sandbox and confirms a
 # renderer works and chrome://sandbox does not report an unsandboxed process.
 write_browser_verify() {
-  "${SUDO[@]}" tee "${TAU_BROWSER_VERIFY_JS}" >/dev/null <<'BROWSER_VERIFY_JS'
+  "${SUDO[@]}" tee "${FICUS_BROWSER_VERIFY_JS}" >/dev/null <<'BROWSER_VERIFY_JS'
 // One-shot Chromium sandbox verification — PHASE 1 hard gate (spec §4.1/§5).
 // Launches headless Chromium WITHOUT --no-sandbox and confirms a renderer works
 // under the unprivileged tau-browser user (a missing user-namespace grant
@@ -1103,7 +1103,7 @@ BROWSER_VERIFY_JS
 # attachment matches both the full `chrome` and the `headless_shell` binary
 # across Playwright build directories, so it is version-independent.
 write_browser_apparmor() {
-  "${SUDO[@]}" tee "${TAU_BROWSER_APPARMOR}" >/dev/null <<'BROWSER_APPARMOR'
+  "${SUDO[@]}" tee "${FICUS_BROWSER_APPARMOR}" >/dev/null <<'BROWSER_APPARMOR'
 # tau-browser: grant unprivileged user-namespace creation to the pinned Chromium
 # so its renderer sandbox works under the unprivileged tau-browser user. KEEP the
 # sandbox ON — never --no-sandbox (browser-tools-in-sandbox spec §4.1/§5).
@@ -1133,7 +1133,7 @@ BROWSER_APPARMOR
 # is embedded verbatim — byte-identical to scripts/machine/browser/tau-browser.service
 # (which the machine image COPYs), asserted by bootstrap.test.ts.
 write_browser_unit() {
-  "${SUDO[@]}" tee "${TAU_BROWSER_UNIT}" >/dev/null <<'BROWSER_UNIT'
+  "${SUDO[@]}" tee "${FICUS_BROWSER_UNIT}" >/dev/null <<'BROWSER_UNIT'
 [Unit]
 Description=tau shared browser service (per-box contexts, token auth, caps)
 After=network-online.target
@@ -1147,7 +1147,7 @@ RuntimeDirectory=tau-browser
 RuntimeDirectoryMode=0750
 Environment=HOME=/opt/tau/browser/home
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/tau/browser/ms-playwright
-Environment=TAU_BROWSER_SOCK=/run/tau-browser/sock
+Environment=FICUS_BROWSER_SOCK=/run/tau-browser/sock
 ExecStart=/opt/tau/bin/bun /opt/tau/browser/service/tau-browser.js
 Restart=on-failure
 RestartSec=2
@@ -1155,7 +1155,7 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 BROWSER_UNIT
-  "${SUDO[@]}" chmod 0644 "${TAU_BROWSER_UNIT}"
+  "${SUDO[@]}" chmod 0644 "${FICUS_BROWSER_UNIT}"
 }
 
 # Write the host-specific memory cap as a systemd drop-in: MemoryHigh = min(50%
@@ -1173,21 +1173,21 @@ write_browser_memory_dropin() {
   else
     mem_high_mb="${cap_mb}"
   fi
-  dropin_dir="${TAU_BROWSER_UNIT}.d"
+  dropin_dir="${FICUS_BROWSER_UNIT}.d"
   "${SUDO[@]}" mkdir -p "${dropin_dir}"
-  printf '[Service]\nMemoryHigh=%sM\nEnvironment=TAU_BROWSER_MEMORY_HIGH_MB=%s\n' "${mem_high_mb}" "${mem_high_mb}" \
+  printf '[Service]\nMemoryHigh=%sM\nEnvironment=FICUS_BROWSER_MEMORY_HIGH_MB=%s\n' "${mem_high_mb}" "${mem_high_mb}" \
     | "${SUDO[@]}" install -m 0644 /dev/stdin "${dropin_dir}/memory.conf"
 }
 
 # Create the tau-browser system user + group (idempotent). No login shell; a
 # writable HOME under /opt/tau/browser for the browser's runtime state.
 ensure_browser_user() {
-  getent group "${TAU_BROWSER_USER}" >/dev/null 2>&1 \
-    || "${SUDO[@]}" groupadd --system "${TAU_BROWSER_USER}"
-  id -u "${TAU_BROWSER_USER}" >/dev/null 2>&1 \
-    || "${SUDO[@]}" useradd --system --gid "${TAU_BROWSER_USER}" \
-      --home-dir "${TAU_BROWSER_HOME}" --create-home \
-      --shell /usr/sbin/nologin "${TAU_BROWSER_USER}"
+  getent group "${FICUS_BROWSER_USER}" >/dev/null 2>&1 \
+    || "${SUDO[@]}" groupadd --system "${FICUS_BROWSER_USER}"
+  id -u "${FICUS_BROWSER_USER}" >/dev/null 2>&1 \
+    || "${SUDO[@]}" useradd --system --gid "${FICUS_BROWSER_USER}" \
+      --home-dir "${FICUS_BROWSER_HOME}" --create-home \
+      --shell /usr/sbin/nologin "${FICUS_BROWSER_USER}"
 }
 
 # The actual Playwright + Chromium install and service-scaffolding steps. Returns
@@ -1200,32 +1200,32 @@ ensure_browser_user() {
 # likely real-world failure (network/apt/disk); it must never brick provisioning.
 _browser_install_steps() {
   BROWSER_INSTALL_REASON=""
-  "${SUDO[@]}" mkdir -p "${TAU_BROWSER_ROOT}/service" "${TAU_BROWSER_BROWSERS_PATH}" \
+  "${SUDO[@]}" mkdir -p "${FICUS_BROWSER_ROOT}/service" "${FICUS_BROWSER_BROWSERS_PATH}" \
     || { BROWSER_INSTALL_REASON=setup_failed; return 1; }
 
   # Pin Playwright via a private package.json + `bun install` into
   # /opt/tau/browser/node_modules. Skip the (350 MB) download when the pinned
   # playwright is already installed AND a Chromium build is present.
   local installed=""
-  if [ -f "${TAU_BROWSER_ROOT}/node_modules/playwright/package.json" ]; then
+  if [ -f "${FICUS_BROWSER_ROOT}/node_modules/playwright/package.json" ]; then
     installed="$(jq -r '.version // ""' \
-      "${TAU_BROWSER_ROOT}/node_modules/playwright/package.json" 2>/dev/null || echo "")"
+      "${FICUS_BROWSER_ROOT}/node_modules/playwright/package.json" 2>/dev/null || echo "")"
   fi
   # Playwright writes INSTALLATION_COMPLETE only after extraction finishes, so a
   # chrome binary without it is a truncated leftover from an interrupted
   # download — treat it as absent and re-download.
   local chromium_present=false
-  compgen -G "${TAU_BROWSER_BROWSERS_PATH}/chromium-*/chrome-linux*/chrome" >/dev/null 2>&1 \
-    && compgen -G "${TAU_BROWSER_BROWSERS_PATH}/chromium-*/INSTALLATION_COMPLETE" >/dev/null 2>&1 \
+  compgen -G "${FICUS_BROWSER_BROWSERS_PATH}/chromium-*/chrome-linux*/chrome" >/dev/null 2>&1 \
+    && compgen -G "${FICUS_BROWSER_BROWSERS_PATH}/chromium-*/INSTALLATION_COMPLETE" >/dev/null 2>&1 \
     && chromium_present=true
   if [ "${installed}" != "${PLAYWRIGHT_VERSION}" ] || [ "${chromium_present}" != true ]; then
     printf '{"name":"tau-browser","private":true,"dependencies":{"playwright":"%s"}}\n' \
       "${PLAYWRIGHT_VERSION}" \
-      | "${SUDO[@]}" tee "${TAU_BROWSER_ROOT}/package.json" >/dev/null \
+      | "${SUDO[@]}" tee "${FICUS_BROWSER_ROOT}/package.json" >/dev/null \
       || { BROWSER_INSTALL_REASON=setup_failed; return 1; }
     # Install the Playwright npm package(s) pinned exactly.
-    "${SUDO[@]}" env "PLAYWRIGHT_BROWSERS_PATH=${TAU_BROWSER_BROWSERS_PATH}" \
-      "${BUN_BIN_LINK}" install --cwd "${TAU_BROWSER_ROOT}" \
+    "${SUDO[@]}" env "PLAYWRIGHT_BROWSERS_PATH=${FICUS_BROWSER_BROWSERS_PATH}" \
+      "${BUN_BIN_LINK}" install --cwd "${FICUS_BROWSER_ROOT}" \
       || { BROWSER_INSTALL_REASON=playwright_install_failed; return 1; }
     # Download Chromium + its OS deps (--with-deps apt-installs libnss3/libatk/…).
     # The likeliest failure of the whole feature: a network blip, apt mirror
@@ -1239,10 +1239,10 @@ _browser_install_steps() {
     # the stalled attempt left no INSTALLATION_COMPLETE marker.
     local attempt
     for attempt in $(seq 1 "${BROWSER_DOWNLOAD_ATTEMPTS}"); do
-      "${SUDO[@]}" env "PLAYWRIGHT_BROWSERS_PATH=${TAU_BROWSER_BROWSERS_PATH}" \
+      "${SUDO[@]}" env "PLAYWRIGHT_BROWSERS_PATH=${FICUS_BROWSER_BROWSERS_PATH}" \
         DEBIAN_FRONTEND=noninteractive \
         timeout -k 30 "${BROWSER_DOWNLOAD_TIMEOUT_SECS}" \
-        "${BUN_BIN_LINK}" "${TAU_BROWSER_ROOT}/node_modules/playwright/cli.js" install --with-deps chromium \
+        "${BUN_BIN_LINK}" "${FICUS_BROWSER_ROOT}/node_modules/playwright/cli.js" install --with-deps chromium \
         && break
       [ "${attempt}" -lt "${BROWSER_DOWNLOAD_ATTEMPTS}" ] \
         || { BROWSER_INSTALL_REASON=chromium_download_failed; return 1; }
@@ -1258,13 +1258,13 @@ _browser_install_steps() {
 
   # Root-owned + world-readable so every box user's sandbox server can READ the
   # browser binaries (spec §4.1); the service user's HOME stays private + writable.
-  "${SUDO[@]}" chown -R root:root "${TAU_BROWSER_ROOT}" \
+  "${SUDO[@]}" chown -R root:root "${FICUS_BROWSER_ROOT}" \
     || { BROWSER_INSTALL_REASON=setup_failed; return 1; }
-  "${SUDO[@]}" chmod -R a+rX "${TAU_BROWSER_ROOT}" \
+  "${SUDO[@]}" chmod -R a+rX "${FICUS_BROWSER_ROOT}" \
     || { BROWSER_INSTALL_REASON=setup_failed; return 1; }
-  "${SUDO[@]}" chown -R "${TAU_BROWSER_USER}:${TAU_BROWSER_USER}" "${TAU_BROWSER_HOME}" \
+  "${SUDO[@]}" chown -R "${FICUS_BROWSER_USER}:${FICUS_BROWSER_USER}" "${FICUS_BROWSER_HOME}" \
     || { BROWSER_INSTALL_REASON=setup_failed; return 1; }
-  "${SUDO[@]}" chmod 0700 "${TAU_BROWSER_HOME}" \
+  "${SUDO[@]}" chmod 0700 "${FICUS_BROWSER_HOME}" \
     || { BROWSER_INSTALL_REASON=setup_failed; return 1; }
   return 0
 }
@@ -1304,10 +1304,10 @@ browser_mark_unavailable() {
   BROWSER_STATUS="unavailable"
   BROWSER_REASON="${reason}"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  "${SUDO[@]}" mkdir -p "${TAU_BROWSER_ROOT}" 2>/dev/null || true
+  "${SUDO[@]}" mkdir -p "${FICUS_BROWSER_ROOT}" 2>/dev/null || true
   printf 'reason=%s\ntimestamp=%s\ndetail=%s\n' "${reason}" "${ts}" "${detail}" \
-    | "${SUDO[@]}" tee "${TAU_BROWSER_UNAVAILABLE_MARKER}" >/dev/null 2>&1 || true
-  "${SUDO[@]}" rm -f "${TAU_BROWSER_READY_MARKER}" 2>/dev/null || true
+    | "${SUDO[@]}" tee "${FICUS_BROWSER_UNAVAILABLE_MARKER}" >/dev/null 2>&1 || true
+  "${SUDO[@]}" rm -f "${FICUS_BROWSER_READY_MARKER}" 2>/dev/null || true
   # Stop + disable so the unit does not crash-loop (and stays down across reboots)
   # on a host that cannot sandbox it.
   "${SUDO[@]}" systemctl disable --now tau-browser.service >/dev/null 2>&1 || true
@@ -1322,8 +1322,8 @@ browser_mark_ready() {
   BROWSER_REASON=""
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'timestamp=%s\n' "${ts}" \
-    | "${SUDO[@]}" tee "${TAU_BROWSER_READY_MARKER}" >/dev/null 2>&1 || true
-  "${SUDO[@]}" rm -f "${TAU_BROWSER_UNAVAILABLE_MARKER}" 2>/dev/null || true
+    | "${SUDO[@]}" tee "${FICUS_BROWSER_READY_MARKER}" >/dev/null 2>&1 || true
+  "${SUDO[@]}" rm -f "${FICUS_BROWSER_UNAVAILABLE_MARKER}" 2>/dev/null || true
 }
 
 # SOFT GATE (spec §4.1/§5, softened 2026-08-24 per owner). Run on EVERY boot in
@@ -1353,9 +1353,9 @@ verify_browser() {
       "apparmor_parser not found — cannot grant Chromium the userns its sandbox needs"
     return 0
   fi
-  if ! "${SUDO[@]}" apparmor_parser -r -W "${TAU_BROWSER_APPARMOR}" 2>/dev/null; then
+  if ! "${SUDO[@]}" apparmor_parser -r -W "${FICUS_BROWSER_APPARMOR}" 2>/dev/null; then
     browser_mark_unavailable apparmor_load_failed \
-      "failed to load ${TAU_BROWSER_APPARMOR} into the running kernel"
+      "failed to load ${FICUS_BROWSER_APPARMOR} into the running kernel"
     return 0
   fi
 
@@ -1364,7 +1364,7 @@ verify_browser() {
   #    that cannot enter the userns sandbox (or musl/Alpine that cannot run the
   #    glibc Chromium) fails — non-fatally.
   #
-  #    Run it from ${TAU_BROWSER_ROOT} (world-rX) rather than inheriting
+  #    Run it from ${FICUS_BROWSER_ROOT} (world-rX) rather than inheriting
   #    bootstrap's CWD: bootstrap runs as root from /root (0700), and runuser
   #    keeps the caller's CWD. bun started in a directory the target user cannot
   #    stat silently yields an EMPTY process.env — so PLAYWRIGHT_BROWSERS_PATH
@@ -1373,11 +1373,11 @@ verify_browser() {
   #    misleading sandbox_check_failed. An accessible CWD is mandatory. Any
   #    tau-browser bun invocation is subject to this (the SYSTEM unit is safe
   #    only because systemd's default WorkingDirectory=/ is accessible).
-  if ! ( cd "${TAU_BROWSER_ROOT}" && "${SUDO[@]}" runuser -u "${TAU_BROWSER_USER}" -- \
-    env "HOME=${TAU_BROWSER_HOME}" "PLAYWRIGHT_BROWSERS_PATH=${TAU_BROWSER_BROWSERS_PATH}" \
-    "${BUN_BIN_LINK}" "${TAU_BROWSER_VERIFY_JS}" ) >&2; then
+  if ! ( cd "${FICUS_BROWSER_ROOT}" && "${SUDO[@]}" runuser -u "${FICUS_BROWSER_USER}" -- \
+    env "HOME=${FICUS_BROWSER_HOME}" "PLAYWRIGHT_BROWSERS_PATH=${FICUS_BROWSER_BROWSERS_PATH}" \
+    "${BUN_BIN_LINK}" "${FICUS_BROWSER_VERIFY_JS}" ) >&2; then
     browser_mark_unavailable sandbox_check_failed \
-      "Chromium sandbox one-shot verification failed as ${TAU_BROWSER_USER} (see log above)"
+      "Chromium sandbox one-shot verification failed as ${FICUS_BROWSER_USER} (see log above)"
     return 0
   fi
 
@@ -1475,7 +1475,7 @@ write_manifest() {
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf '{"bootstrapVersion":"%s","bunVersion":"%s","nixVersion":"%s","devboxVersion":"%s","playwrightVersion":"%s","bootstrappedAt":"%s"}\n' \
     "${BOOTSTRAP_VERSION}" "${BUN_VERSION}" "${NIX_VERSION}" "${DEVBOX_VERSION}" "${PLAYWRIGHT_VERSION}" "${ts}" \
-    | "${SUDO[@]}" tee "${TAU_ROOT}/manifest.json" >/dev/null
+    | "${SUDO[@]}" tee "${FICUS_ROOT}/manifest.json" >/dev/null
 }
 
 # SECURITY-CRITICAL. Every --core-cidr is interpolated verbatim into the root
@@ -1810,7 +1810,7 @@ print_capabilities() {
   else
     browser_json="$(printf '"browser":"unavailable","browserReason":"%s"' "${BROWSER_REASON:-not_verified}")"
   fi
-  printf 'TAU_CAPS_JSON: {"arch":"%s","cpus":%s,"memMb":%s,"diskGb":%s,"kernel":"%s","docker":"%s","forwarding":"%s",%s}\n' \
+  printf 'FICUS_CAPS_JSON: {"arch":"%s","cpus":%s,"memMb":%s,"diskGb":%s,"kernel":"%s","docker":"%s","forwarding":"%s",%s}\n' \
     "${arch}" "${cpus}" "${mem_mb}" "${disk_gb}" "${kernel}" "${docker}" "${forwarding}" "${browser_json}"
 }
 

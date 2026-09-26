@@ -98,7 +98,7 @@
 #            rootful daemon is ever started — bootstrap.sh masks the system one.
 #
 # On provisioning, the box user's useradd-assigned UID (NOT deterministic) is
-# printed as the sole stdout line `TAU_BOX_UID=<uid>` so the caller (box-manager)
+# printed as the sole stdout line `FICUS_BOX_UID=<uid>` so the caller (box-manager)
 # can bake DOCKER_HOST. All other output goes to stderr.
 #
 # --remove   Stop all three units (socket first, so it cannot re-activate the
@@ -359,7 +359,7 @@ host_nproc() {
 }
 
 # The parallelism a box's builds should default to: half the host's cores,
-# at least one. Written to ~/.tau/host.env as TAU_BOX_CPUS; the server derives
+# at least one. Written to ~/.tau/host.env as FICUS_BOX_CPUS; the server derives
 # CARGO_BUILD_JOBS / MAKEFLAGS / GOMAXPROCS / CMAKE_BUILD_PARALLEL_LEVEL for
 # every child it spawns unless the caller set them explicitly.
 box_cpus() {
@@ -414,7 +414,7 @@ slice_limits() {
 write_host_env() {
   local home="$1" cpus
   cpus="$(box_cpus)" || return 1
-  printf 'TAU_BOX_CPUS=%s\n' "${cpus}" \
+  printf 'FICUS_BOX_CPUS=%s\n' "${cpus}" \
     | "${SUDO[@]}" install -o "${UNIX_USER}" -g "${UNIX_USER}" -m 0644 /dev/stdin "${home}/.tau/host.env"
 }
 
@@ -511,7 +511,7 @@ fi
 # Validate --port BEFORE it is baked into the root-written systemd unit, so a
 # newline (or any non-digit) can never inject arbitrary unit directives. --port
 # is REQUIRED on the provision path: an empty value would otherwise write
-# `Environment=TAU_BOX_PORT=` into the unit. Removal and restore modes do not
+# `Environment=FICUS_BOX_PORT=` into the unit. Removal and restore modes do not
 # use a port, so omission is safe there. If a caller does supply --port in any
 # mode, validate it consistently rather than silently accepting malformed input.
 if [ "${REMOVE}" != true ] && [ "${RESTORE}" != true ] && [ "${RESTORE_STREAM}" != true ] && [ "${PORT_SUPPLIED}" != true ] && [ "${PREPARE_NIX_CACHE}" != true ] && [ "${PUBLISH_NIX_CACHE}" != true ]; then
@@ -814,7 +814,7 @@ provision_docker() {
 
   # dockerd-rootless-setuptool.sh sets up the box user's ~/.config/systemd/user
   # docker.service. It is idempotent (tolerates "already installed"); its stdout
-  # is routed to stderr so it never pollutes the TAU_BOX_UID marker line.
+  # is routed to stderr so it never pollutes the FICUS_BOX_UID marker line.
   #
   # `--skip-iptables` makes the setuptool's iptables pre-flight check pass on
   # kernels where the nf_tables backend is BUILT INTO the kernel but listed in
@@ -917,11 +917,11 @@ remove_box() {
   local home
   home="$(user_home)"
   if [ -n "${home}" ] && [ -d "${home}" ]; then
-    "${SUDO[@]}" mkdir -p "${TAU_ARCHIVE_DIR}"
+    "${SUDO[@]}" mkdir -p "${FICUS_ARCHIVE_DIR}"
     prune_box_archives
     local epoch archive parent base
     epoch="$(date -u +%s)"
-    archive="${TAU_ARCHIVE_DIR}/${UNIX_USER}-${epoch}.tar.gz"
+    archive="${FICUS_ARCHIVE_DIR}/${UNIX_USER}-${epoch}.tar.gz"
     parent="$(dirname "${home}")"
     base="$(basename "${home}")"
     # Archive the WHOLE home (workspace included) before deletion.
@@ -965,25 +965,25 @@ remove_box() {
 # Never fatal: this is housekeeping in front of a removal, and a failure to
 # prune must not block the removal itself.
 prune_box_archives() {
-  local keep_days="${TAU_ARCHIVE_RETENTION_DAYS:-14}"
-  [ -d "${TAU_ARCHIVE_DIR}" ] || return 0
+  local keep_days="${FICUS_ARCHIVE_RETENTION_DAYS:-14}"
+  [ -d "${FICUS_ARCHIVE_DIR}" ] || return 0
 
   # Supersede: keep only the newest tarball per box.
   local b stamps n
-  for b in $("${SUDO[@]}" ls -1 "${TAU_ARCHIVE_DIR}" 2>/dev/null |
+  for b in $("${SUDO[@]}" ls -1 "${FICUS_ARCHIVE_DIR}" 2>/dev/null |
     sed -nE 's/^(box_[0-9a-f]+)-[0-9]+\.tar\.gz$/\1/p' | sort -u); do
-    stamps="$("${SUDO[@]}" ls -1 "${TAU_ARCHIVE_DIR}" 2>/dev/null |
+    stamps="$("${SUDO[@]}" ls -1 "${FICUS_ARCHIVE_DIR}" 2>/dev/null |
       sed -nE "s/^${b}-([0-9]+)\.tar\.gz\$/\\1/p" | sort -n)"
     n="$(printf '%s\n' "${stamps}" | grep -c . || true)"
     [ "${n}" -le 1 ] && continue
     printf '%s\n' "${stamps}" | head -n "$((n - 1))" | while read -r ts; do
       [ -n "${ts}" ] || continue
-      "${SUDO[@]}" rm -f "${TAU_ARCHIVE_DIR}/${b}-${ts}.tar.gz" || true
+      "${SUDO[@]}" rm -f "${FICUS_ARCHIVE_DIR}/${b}-${ts}.tar.gz" || true
     done
   done
 
   # Age cap for whatever survives the supersede pass.
-  "${SUDO[@]}" find "${TAU_ARCHIVE_DIR}" -maxdepth 1 -name 'box_*.tar.gz' \
+  "${SUDO[@]}" find "${FICUS_ARCHIVE_DIR}" -maxdepth 1 -name 'box_*.tar.gz' \
     -mtime "+${keep_days}" -delete 2>/dev/null || true
   return 0
 }
@@ -1262,7 +1262,7 @@ ensure_dirs() {
 # enabled/started) even before the slice-2 manager pushes server.env or the
 # server bundle. The server binds EXECUTOR_PORT, which the manager writes into
 # server.env (box-manager `derivedBoxEnv`) BEFORE the first unit restart, so the
-# real listen port always comes from there. TAU_BOX_PORT is never read as a
+# real listen port always comes from there. FICUS_BOX_PORT is never read as a
 # port (kept range-validated above only so the unit always carries a concrete,
 # injection-safe value) — but the server DOES read its presence as the
 # VM-runtime marker for the fail-closed gate: because it is baked into the
@@ -1299,8 +1299,8 @@ render_unit() {
       "Group=${UNIX_USER}"
       "WorkingDirectory=${home}"
       "RuntimeDirectory=$(runtime_dir_name)"
-      "Environment=TAU_BOX_PORT=${PORT}"
-      'Environment=TAU_BROWSER_SOCK=/run/tau-browser/sock'
+      "Environment=FICUS_BOX_PORT=${PORT}"
+      'Environment=FICUS_BROWSER_SOCK=/run/tau-browser/sock'
       "Environment=EXECUTOR_SOCKET=$(box_socket_file)"
       "Environment=EXECUTOR_IDLE_EXIT_MS=${IDLE_EXIT_MS}"
       "EnvironmentFile=-${home}/.tau/host.env"
@@ -1327,8 +1327,8 @@ render_unit() {
       '[Service]'
       'Type=simple'
       "RuntimeDirectory=$(runtime_dir_name)"
-      "Environment=TAU_BOX_PORT=${PORT}"
-      'Environment=TAU_BROWSER_SOCK=/run/tau-browser/sock'
+      "Environment=FICUS_BOX_PORT=${PORT}"
+      'Environment=FICUS_BROWSER_SOCK=/run/tau-browser/sock'
       "Environment=EXECUTOR_SOCKET=$(box_socket_file)"
       "Environment=EXECUTOR_IDLE_EXIT_MS=${IDLE_EXIT_MS}"
       'EnvironmentFile=-%h/.tau/host.env'
@@ -1444,7 +1444,7 @@ assert_socket_proxyd() {
 #
 # Leaving user mode also KILLS the old user manager (disable-linger +
 # terminate-user) before the new system unit is installed: the outgoing
-# tau-sandbox-server still holds TAU_BOX_PORT, and the incoming unit binds the
+# tau-sandbox-server still holds FICUS_BOX_PORT, and the incoming unit binds the
 # same port. Belt-and-braces — the caller starts the unit only after this
 # returns — but a lingering manager would otherwise survive indefinitely.
 reconcile_unit_mode() {
@@ -1538,7 +1538,7 @@ provision_box() {
   # the whole provision window (a minute+ for docker roles). The manager's
   # post-env `systemctl restart` (which starts an inactive unit fine) performs
   # the first real activation; nothing in this script needs the unit running.
-  # Belt-and-braces: the server itself refuses to start when TAU_BOX_PORT (baked
+  # Belt-and-braces: the server itself refuses to start when FICUS_BOX_PORT (baked
   # into this unit below, so present even without server.env) or EXECUTOR_BIND
   # is set without EXECUTOR_AUTH_TOKEN (packages/k8s-sandbox/src/server.ts), so
   # even a stray pre-env start fails closed instead of serving.
@@ -1552,10 +1552,10 @@ provision_box() {
 
   # Sole stdout line: the box user's useradd-assigned UID, so box-manager can bake
   # DOCKER_HOST=unix:///run/user/<uid>/docker.sock. Everything else went to stderr.
-  printf 'TAU_BOX_UID=%s\n' "$(box_uid)"
+  printf 'FICUS_BOX_UID=%s\n' "$(box_uid)"
 }
 
-TAU_ARCHIVE_DIR="/opt/tau/archive"
+FICUS_ARCHIVE_DIR="/opt/tau/archive"
 
 # Side-effect-free dry run (tests): print the three unit files this invocation
 # would install (server, socket, proxy), each prefixed with a `# path: <path>`

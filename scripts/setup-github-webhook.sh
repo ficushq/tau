@@ -21,7 +21,7 @@ EVENTS=(
   "workflow_run"
 )
 
-: "${TAU_GITHUB_HOOK_SETUP_SECRET:?Set TAU_GITHUB_HOOK_SETUP_SECRET to the same new secret entered in Settings > Integrations > GitHub > Webhook delivery}"
+: "${FICUS_GITHUB_HOOK_SETUP_SECRET:?Set FICUS_GITHUB_HOOK_SETUP_SECRET to the same new secret entered in Settings > Integrations > GitHub > Webhook delivery}"
 
 echo "Checking GitHub auth..."
 gh auth status
@@ -43,7 +43,7 @@ if [ -n "$HOOK_ID" ]; then
   cmd=(gh api --method PATCH "repos/$REPO/hooks/$HOOK_ID"
     -f "config[url]=$WEBHOOK_URL"
     -f "config[content_type]=$CONTENT_TYPE"
-    -f "config[secret]=$TAU_GITHUB_HOOK_SETUP_SECRET"
+    -f "config[secret]=$FICUS_GITHUB_HOOK_SETUP_SECRET"
     -f "config[insecure_ssl]=0"
     -F active=true
   )
@@ -60,7 +60,7 @@ else
     -f name=web
     -f "config[url]=$WEBHOOK_URL"
     -f "config[content_type]=$CONTENT_TYPE"
-    -f "config[secret]=$TAU_GITHUB_HOOK_SETUP_SECRET"
+    -f "config[secret]=$FICUS_GITHUB_HOOK_SETUP_SECRET"
     -f "config[insecure_ssl]=0"
     -F active=true
   )

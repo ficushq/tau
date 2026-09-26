@@ -78,8 +78,8 @@ describe('lib.test.sh root-install marker', () => {
     expect(libTest.split(marker).length - 1).toBe(1) // exactly once
     // Structurally inside the probe's success branch: after the success
     // assignment, before the failure assignment.
-    const probeIf = libTest.indexOf('TAU_TEST_ROOT_INSTALL=1')
-    const probeElse = libTest.indexOf('TAU_TEST_ROOT_INSTALL=0')
+    const probeIf = libTest.indexOf('FICUS_TEST_ROOT_INSTALL=1')
+    const probeElse = libTest.indexOf('FICUS_TEST_ROOT_INSTALL=0')
     expect(probeIf).toBeGreaterThan(-1)
     expect(probeElse).toBeGreaterThan(probeIf)
     const markerAt = libTest.indexOf(marker)

@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${TAU_INSTALL_REPO:-ficushq/tau}"
-INSTALL_DIR="${TAU_INSTALL_DIR:-$HOME/.tau/bin}"
-SHARE_DIR="${TAU_SHARE_DIR:-$HOME/.tau/share}"
+REPO="${FICUS_INSTALL_REPO:-ficushq/tau}"
+INSTALL_DIR="${FICUS_INSTALL_DIR:-$HOME/.tau/bin}"
+SHARE_DIR="${FICUS_SHARE_DIR:-$HOME/.tau/share}"
 BIN_NAME="tau"
 API_URL="${GITHUB_API_URL:-https://api.github.com}"
-DOWNLOAD_BASE_URL="${TAU_DOWNLOAD_BASE_URL:-https://ficus.sh/cli}"
+DOWNLOAD_BASE_URL="${FICUS_DOWNLOAD_BASE_URL:-https://ficus.sh/cli}"
 
 if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ]; then
   ESC=$(printf '\033')
@@ -238,9 +238,9 @@ if [ -d "$SHARE_DIR/skills" ]; then
 fi
 
 configure_auth() {
-  AUTH_MODE="${TAU_INSTALL_AUTH:-prompt}"
+  AUTH_MODE="${FICUS_INSTALL_AUTH:-prompt}"
   if [ "$AUTH_MODE" = "0" ] || [ "$AUTH_MODE" = "false" ]; then
-    warn "Skipping Tau auth setup because TAU_INSTALL_AUTH=$AUTH_MODE."
+    warn "Skipping Tau auth setup because FICUS_INSTALL_AUTH=$AUTH_MODE."
     return 0
   fi
 
@@ -261,20 +261,20 @@ configure_auth() {
     esac
   fi
 
-  LABEL="${TAU_AUTH_LABEL:-}"
+  LABEL="${FICUS_AUTH_LABEL:-}"
   if [ -z "$LABEL" ]; then
     if ! is_interactive; then
-      err "TAU_AUTH_LABEL is required when TAU_INSTALL_AUTH=1 in non-interactive mode"
+      err "FICUS_AUTH_LABEL is required when FICUS_INSTALL_AUTH=1 in non-interactive mode"
     fi
     prompt "Backend label [default]: "
     LABEL="$REPLY_VALUE"
     [ -n "$LABEL" ] || LABEL="default"
   fi
 
-  API_URL_VALUE="${TAU_API_URL:-}"
+  API_URL_VALUE="${FICUS_API_URL:-}"
   if [ -z "$API_URL_VALUE" ]; then
     if ! is_interactive; then
-      err "TAU_API_URL is required when TAU_INSTALL_AUTH=1 in non-interactive mode"
+      err "FICUS_API_URL is required when FICUS_INSTALL_AUTH=1 in non-interactive mode"
     fi
     while [ -z "$API_URL_VALUE" ]; do
       prompt "Tau Core API URL: "
@@ -282,10 +282,10 @@ configure_auth() {
     done
   fi
 
-  PASSWORD_VALUE="${TAU_PASSWORD:-}"
+  PASSWORD_VALUE="${FICUS_PASSWORD:-}"
   if [ -z "$PASSWORD_VALUE" ]; then
     if ! is_interactive; then
-      err "TAU_PASSWORD is required when TAU_INSTALL_AUTH=1 in non-interactive mode"
+      err "FICUS_PASSWORD is required when FICUS_INSTALL_AUTH=1 in non-interactive mode"
     fi
     while [ -z "$PASSWORD_VALUE" ]; do
       prompt_hidden "Tau password/token: "
@@ -294,10 +294,10 @@ configure_auth() {
   fi
 
   step "Saving backend '$LABEL'..."
-  TAU_PASSWORD="$PASSWORD_VALUE" "$INSTALL_DIR/$BIN_NAME" auth login "$LABEL" --api-url "$API_URL_VALUE"
+  FICUS_PASSWORD="$PASSWORD_VALUE" "$INSTALL_DIR/$BIN_NAME" auth login "$LABEL" --api-url "$API_URL_VALUE"
 
-  if [ "${TAU_INSTALL_VERIFY:-1}" = "0" ] || [ "${TAU_INSTALL_VERIFY:-1}" = "false" ]; then
-    warn "Skipping auth verification because TAU_INSTALL_VERIFY=${TAU_INSTALL_VERIFY:-1}."
+  if [ "${FICUS_INSTALL_VERIFY:-1}" = "0" ] || [ "${FICUS_INSTALL_VERIFY:-1}" = "false" ]; then
+    warn "Skipping auth verification because FICUS_INSTALL_VERIFY=${FICUS_INSTALL_VERIFY:-1}."
     return 0
   fi
 

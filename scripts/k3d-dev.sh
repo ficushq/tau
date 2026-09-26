@@ -23,18 +23,18 @@ set -euo pipefail
 
 CLUSTER_NAME="tau-dev"
 NAMESPACE="tau-sandboxes-dev"
-KUBECTL_CONTEXT="${TAU_K8S_CONTEXT:-k3d-tau-dev-token}"
+KUBECTL_CONTEXT="${FICUS_K8S_CONTEXT:-k3d-tau-dev-token}"
 REGISTRY_CONTAINER="tau-registry"
-K3D_NETWORK="${TAU_K3D_NETWORK:-tau-dev}"
-REGISTRY_HOST_PORT="${TAU_K3D_REGISTRY_PORT:-5001}"
+K3D_NETWORK="${FICUS_K3D_NETWORK:-tau-dev}"
+REGISTRY_HOST_PORT="${FICUS_K3D_REGISTRY_PORT:-5001}"
 REGISTRY_ENDPOINT="${REGISTRY_CONTAINER}:5000"
 REGISTRY_IMAGE="localhost:${REGISTRY_HOST_PORT}/tau-sandbox:latest"
 SANDBOX_IMAGE="${REGISTRY_ENDPOINT}/tau-sandbox:latest"
 AGENT_REGISTRY_IMAGE="localhost:${REGISTRY_HOST_PORT}/tau-sandbox-agent:latest"
 AGENT_SANDBOX_IMAGE="${REGISTRY_ENDPOINT}/tau-sandbox-agent:latest"
-TAU_HOME="${HOME}/.tau"
-HOST_IP_FILE="${TAU_HOME}/.k3d-host-ip"
-REGISTRY_CONFIG_FILE="${TAU_HOME}/k3d-registries.yaml"
+FICUS_HOME="${HOME}/.tau"
+HOST_IP_FILE="${FICUS_HOME}/.k3d-host-ip"
+REGISTRY_CONFIG_FILE="${FICUS_HOME}/k3d-registries.yaml"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -106,7 +106,7 @@ detect_host_alias_ip() {
 # always honored by kubelet.
 write_host_ip() {
   local ip="$1"
-  mkdir -p "${TAU_HOME}"
+  mkdir -p "${FICUS_HOME}"
   echo "${ip}" > "${HOST_IP_FILE}"
   log "Wrote ${HOST_IP_FILE}"
 }
@@ -194,7 +194,7 @@ prune_node_images() {
 }
 
 write_registry_config() {
-  mkdir -p "${TAU_HOME}"
+  mkdir -p "${FICUS_HOME}"
   cat > "${REGISTRY_CONFIG_FILE}" <<EOF
 mirrors:
   "${REGISTRY_ENDPOINT}":
@@ -304,13 +304,13 @@ cmd_setup() {
   ensure_registry
 
   # --- Ensure ~/.tau directories exist ---
-  log "Ensuring ${TAU_HOME} directories..."
-  mkdir -p "${TAU_HOME}/workspaces/squads"
-  mkdir -p "${TAU_HOME}/workspaces/agents"
-  mkdir -p "${TAU_HOME}/memory"
-  mkdir -p "${TAU_HOME}/ssh"
-  mkdir -p "${TAU_HOME}/nix"
-  mkdir -p "${TAU_HOME}/sessions"
+  log "Ensuring ${FICUS_HOME} directories..."
+  mkdir -p "${FICUS_HOME}/workspaces/squads"
+  mkdir -p "${FICUS_HOME}/workspaces/agents"
+  mkdir -p "${FICUS_HOME}/memory"
+  mkdir -p "${FICUS_HOME}/ssh"
+  mkdir -p "${FICUS_HOME}/nix"
+  mkdir -p "${FICUS_HOME}/sessions"
 
   # --- Detect host alias IP and persist for pod-manager ---
   local HOST_ALIAS_IP
@@ -322,7 +322,7 @@ cmd_setup() {
   log "Creating k3d cluster '${CLUSTER_NAME}'..."
   k3d cluster create "${CLUSTER_NAME}" \
     --agents 0 \
-    --volume "${TAU_HOME}:/tau-data" \
+    --volume "${FICUS_HOME}:/tau-data" \
     --network "${K3D_NETWORK}" \
     --no-lb \
     --registry-config "${REGISTRY_CONFIG_FILE}" \
@@ -438,11 +438,11 @@ EOF
   echo ""
   echo "  Add to your .env:"
   echo ""
-  echo "    TAU_SANDBOX_RUNTIME=k8s"
-  echo "    TAU_K8S_LOCAL=true"
-  echo "    TAU_K8S_NAMESPACE=${NAMESPACE}"
-  echo "    TAU_K8S_RUNTIME_CLASS="
-  echo "    TAU_SANDBOX_IMAGE=${SANDBOX_IMAGE}"
+  echo "    FICUS_SANDBOX_RUNTIME=k8s"
+  echo "    FICUS_K8S_LOCAL=true"
+  echo "    FICUS_K8S_NAMESPACE=${NAMESPACE}"
+  echo "    FICUS_K8S_RUNTIME_CLASS="
+  echo "    FICUS_SANDBOX_IMAGE=${SANDBOX_IMAGE}"
   echo ""
   echo "  Then restart: bun run reload:core"
   echo ""

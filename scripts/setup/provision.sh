@@ -177,9 +177,9 @@ CORE_ENV_FORWARD_NAMES=$(cfg_env_forward_names '.core.env')
 # (cfg_get defaults match setup-host.sh's), so no -n guard is needed; whether
 # anything actually ships depends on the FORWARD_ENVS push loop below finding
 # a set value.
-BACKUP_S3_ACCESS_KEY_ENV=$(cfg_get '.backup.s3_access_key_env' 'TAU_BACKUP_S3_ACCESS_KEY')
-BACKUP_S3_SECRET_KEY_ENV=$(cfg_get '.backup.s3_secret_key_env' 'TAU_BACKUP_S3_SECRET_KEY')
-BACKUP_PASSPHRASE_ENV=$(cfg_get '.backup.passphrase_env' 'TAU_BACKUP_PASSPHRASE')
+BACKUP_S3_ACCESS_KEY_ENV=$(cfg_get '.backup.s3_access_key_env' 'FICUS_BACKUP_S3_ACCESS_KEY')
+BACKUP_S3_SECRET_KEY_ENV=$(cfg_get '.backup.s3_secret_key_env' 'FICUS_BACKUP_S3_SECRET_KEY')
+BACKUP_PASSPHRASE_ENV=$(cfg_get '.backup.passphrase_env' 'FICUS_BACKUP_PASSPHRASE')
 
 # Hetzner provider + Cloudflare DNS knobs (ignored unless provision.provider /
 # dns.provider select them).
@@ -263,11 +263,11 @@ FORWARD_ENVS=()
 # forwarding a GitHub credential in this mode would be a live, unused secret
 # on the target for no reason.
 if [[ ${SRC_MODE} == artifact ]]; then
-  FORWARD_ENVS+=('TAU_ARTIFACT_TARBALL_URL' 'TAU_ARTIFACT_MANIFEST_URL' 'TAU_ARTIFACT_SIG_URL' 'TAU_ARTIFACT_PUBKEY_B64')
+  FORWARD_ENVS+=('FICUS_ARTIFACT_TARBALL_URL' 'FICUS_ARTIFACT_MANIFEST_URL' 'FICUS_ARTIFACT_SIG_URL' 'FICUS_ARTIFACT_PUBKEY_B64')
 fi
 [[ -n ${SEC_ENC_ENV} ]] && FORWARD_ENVS+=("${SEC_ENC_ENV}")
 [[ -n ${SEC_PW_ENV} ]] && FORWARD_ENVS+=("${SEC_PW_ENV}")
-FORWARD_ENVS+=('TAU_SETUP_DATABASE_DSN')
+FORWARD_ENVS+=('FICUS_SETUP_DATABASE_DSN')
 FORWARD_ENVS+=("${BACKUP_S3_ACCESS_KEY_ENV}" "${BACKUP_S3_SECRET_KEY_ENV}" "${BACKUP_PASSPHRASE_ENV}")
 # Restore-from-backup (cloud control plane): the presigned archive URL, its
 # decryption passphrase, and the cross-subdomain credential-strip flag. Only
@@ -275,7 +275,7 @@ FORWARD_ENVS+=("${BACKUP_S3_ACCESS_KEY_ENV}" "${BACKUP_S3_SECRET_KEY_ENV}" "${BA
 # `-n`-gated), so a non-restore provision forwards nothing extra. The URL is a
 # presigned S3 GET and carries many `&` — sh_single_quote in the push loop is
 # what keeps `source`ing secrets.env from backgrounding at the first `&`.
-FORWARD_ENVS+=('TAU_SETUP_RESTORE_URL' 'TAU_SETUP_RESTORE_PASSPHRASE' 'TAU_SETUP_RESTORE_STRIP_CREDENTIALS')
+FORWARD_ENVS+=('FICUS_SETUP_RESTORE_URL' 'FICUS_SETUP_RESTORE_PASSPHRASE' 'FICUS_SETUP_RESTORE_STRIP_CREDENTIALS')
 # core.env's *_ENV secret-indirection entries — forward each named var so the
 # headless run on the target can resolve them (mirrors secrets.*_env above).
 while IFS= read -r core_env_forward_name; do

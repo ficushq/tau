@@ -17,7 +17,7 @@ describe('k3d-dev.sh local image safeguards', () => {
   test('k3d setup/import pushes sandbox image to the compose registry instead of relying on node-only image import', () => {
     expect(script).toContain('REGISTRY_CONTAINER="tau-registry"')
     expect(script).toContain('docker compose up -d registry')
-    expect(script).toContain('K3D_NETWORK="${TAU_K3D_NETWORK:-tau-dev}"')
+    expect(script).toContain('K3D_NETWORK="${FICUS_K3D_NETWORK:-tau-dev}"')
     expect(script).toContain('--network "${K3D_NETWORK}"')
     expect(script).toContain('docker network connect "${network}" "${REGISTRY_CONTAINER}"')
     expect(script).toContain('docker push "${REGISTRY_IMAGE}"')

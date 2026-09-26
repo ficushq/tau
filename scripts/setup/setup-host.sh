@@ -122,22 +122,22 @@ if [[ ${SRC_MODE} == artifact ]]; then
   # shellcheck disable=SC2034 # caller global: lib.sh's core_run_root reads it
   CORE_LAYOUT=artifact
 
-  TAU_ARTIFACT_TARBALL_URL=${TAU_ARTIFACT_TARBALL_URL:-}
-  TAU_ARTIFACT_MANIFEST_URL=${TAU_ARTIFACT_MANIFEST_URL:-}
-  TAU_ARTIFACT_SIG_URL=${TAU_ARTIFACT_SIG_URL:-}
-  TAU_ARTIFACT_PUBKEY_B64=${TAU_ARTIFACT_PUBKEY_B64:-}
-  if [[ -n ${TAU_ARTIFACT_TARBALL_URL} && -n ${TAU_ARTIFACT_MANIFEST_URL} && -n ${TAU_ARTIFACT_SIG_URL} && -n ${TAU_ARTIFACT_PUBKEY_B64} ]]; then
+  FICUS_ARTIFACT_TARBALL_URL=${FICUS_ARTIFACT_TARBALL_URL:-}
+  FICUS_ARTIFACT_MANIFEST_URL=${FICUS_ARTIFACT_MANIFEST_URL:-}
+  FICUS_ARTIFACT_SIG_URL=${FICUS_ARTIFACT_SIG_URL:-}
+  FICUS_ARTIFACT_PUBKEY_B64=${FICUS_ARTIFACT_PUBKEY_B64:-}
+  if [[ -n ${FICUS_ARTIFACT_TARBALL_URL} && -n ${FICUS_ARTIFACT_MANIFEST_URL} && -n ${FICUS_ARTIFACT_SIG_URL} && -n ${FICUS_ARTIFACT_PUBKEY_B64} ]]; then
     : # all four present — proceed
-  elif [[ -n ${TAU_ARTIFACT_TARBALL_URL}${TAU_ARTIFACT_MANIFEST_URL}${TAU_ARTIFACT_SIG_URL}${TAU_ARTIFACT_PUBKEY_B64} ]]; then
+  elif [[ -n ${FICUS_ARTIFACT_TARBALL_URL}${FICUS_ARTIFACT_MANIFEST_URL}${FICUS_ARTIFACT_SIG_URL}${FICUS_ARTIFACT_PUBKEY_B64} ]]; then
     # SOME but not all: a delivery bug. Falling through would either build
     # from source while the control plane believes it shipped a verified
     # artifact, or fail deep inside the verify with no clue why. Fail loudly
     # instead, naming exactly which inputs are missing.
-    die "artifact inputs are incomplete — refusing to fall back to a source build (need TAU_ARTIFACT_TARBALL_URL, TAU_ARTIFACT_MANIFEST_URL, TAU_ARTIFACT_SIG_URL and TAU_ARTIFACT_PUBKEY_B64; missing:$(
-      [[ -z ${TAU_ARTIFACT_TARBALL_URL} ]] && printf ' TAU_ARTIFACT_TARBALL_URL'
-      [[ -z ${TAU_ARTIFACT_MANIFEST_URL} ]] && printf ' TAU_ARTIFACT_MANIFEST_URL'
-      [[ -z ${TAU_ARTIFACT_SIG_URL} ]] && printf ' TAU_ARTIFACT_SIG_URL'
-      [[ -z ${TAU_ARTIFACT_PUBKEY_B64} ]] && printf ' TAU_ARTIFACT_PUBKEY_B64'
+    die "artifact inputs are incomplete — refusing to fall back to a source build (need FICUS_ARTIFACT_TARBALL_URL, FICUS_ARTIFACT_MANIFEST_URL, FICUS_ARTIFACT_SIG_URL and FICUS_ARTIFACT_PUBKEY_B64; missing:$(
+      [[ -z ${FICUS_ARTIFACT_TARBALL_URL} ]] && printf ' FICUS_ARTIFACT_TARBALL_URL'
+      [[ -z ${FICUS_ARTIFACT_MANIFEST_URL} ]] && printf ' FICUS_ARTIFACT_MANIFEST_URL'
+      [[ -z ${FICUS_ARTIFACT_SIG_URL} ]] && printf ' FICUS_ARTIFACT_SIG_URL'
+      [[ -z ${FICUS_ARTIFACT_PUBKEY_B64} ]] && printf ' FICUS_ARTIFACT_PUBKEY_B64'
       true
     ))"
   else
@@ -147,11 +147,11 @@ if [[ ${SRC_MODE} == artifact ]]; then
     # this is a delivery bug. Named per-variable too: the control plane's
     # secrets writer silently skips unset vars, so an operator staring at
     # this message needs to know WHICH ones never arrived.
-    die "source.mode=artifact needs TAU_ARTIFACT_TARBALL_URL/_MANIFEST_URL/_SIG_URL/_PUBKEY_B64 in the environment (secrets.env); missing:$(
-      [[ -z ${TAU_ARTIFACT_TARBALL_URL} ]] && printf ' TAU_ARTIFACT_TARBALL_URL'
-      [[ -z ${TAU_ARTIFACT_MANIFEST_URL} ]] && printf ' TAU_ARTIFACT_MANIFEST_URL'
-      [[ -z ${TAU_ARTIFACT_SIG_URL} ]] && printf ' TAU_ARTIFACT_SIG_URL'
-      [[ -z ${TAU_ARTIFACT_PUBKEY_B64} ]] && printf ' TAU_ARTIFACT_PUBKEY_B64'
+    die "source.mode=artifact needs FICUS_ARTIFACT_TARBALL_URL/_MANIFEST_URL/_SIG_URL/_PUBKEY_B64 in the environment (secrets.env); missing:$(
+      [[ -z ${FICUS_ARTIFACT_TARBALL_URL} ]] && printf ' FICUS_ARTIFACT_TARBALL_URL'
+      [[ -z ${FICUS_ARTIFACT_MANIFEST_URL} ]] && printf ' FICUS_ARTIFACT_MANIFEST_URL'
+      [[ -z ${FICUS_ARTIFACT_SIG_URL} ]] && printf ' FICUS_ARTIFACT_SIG_URL'
+      [[ -z ${FICUS_ARTIFACT_PUBKEY_B64} ]] && printf ' FICUS_ARTIFACT_PUBKEY_B64'
       true
     )"
   fi
@@ -170,7 +170,7 @@ BUN_BIN=/usr/local/bin/bun
 # Optional operator/control-plane env passthrough: a flat string map appended
 # verbatim to <dest>/.env, after the built-ins (see build_env_content). A
 # future cloud control plane uses this to inject per-tenant knobs (e.g.
-# TAU_MAX_MACHINES tier limits) without needing a new config field per knob.
+# FICUS_MAX_MACHINES tier limits) without needing a new config field per knob.
 # Built-ins always win — an attempt to override one is a configuration error,
 # not something to silently ignore. Validation (and *_ENV secret-indirection
 # resolution — see cfg_env_pairs in lib.sh) happens once here so a bad
@@ -180,17 +180,17 @@ CORE_ENV_PAIRS=$(cfg_env_pairs '.core.env' real)
 while IFS='=' read -r core_env_key _; do
   [[ -z ${core_env_key} ]] && continue
   case "${core_env_key}" in
-    APP_URL | TAU_WEB_ORIGIN | DATABASE_URL | TAU_ENCRYPTION_KEY | TAU_PASSWORD | TAU_INTERNAL_EVENT_TOKEN)
+    APP_URL | FICUS_WEB_ORIGIN | DATABASE_URL | FICUS_ENCRYPTION_KEY | FICUS_PASSWORD | FICUS_INTERNAL_EVENT_TOKEN)
       die "config: core.env may not set '${core_env_key}' — it is a built-in derived from core.origin/database/secrets, not a passthrough knob" ;;
-    # TAU_ROOT is owned by the systemd units (Environment=TAU_ROOT=<run root>)
+    # FICUS_ROOT is owned by the systemd units (Environment=FICUS_ROOT=<run root>)
     # and decides which tree core reads its config, migrations and web dist
-    # from. systemd applies EnvironmentFile= AFTER Environment=, so a TAU_ROOT
+    # from. systemd applies EnvironmentFile= AFTER Environment=, so a FICUS_ROOT
     # in <dest>/.env WINS over the unit's — on an artifact box that means the
     # services silently run one release's code against another tree's files,
     # with no error anywhere. Refuse it at render time, where it is a one-line
     # config fix instead of a mystery.
-    TAU_ROOT)
-      die "config: core.env may not set 'TAU_ROOT' — it is unit-managed (Environment=TAU_ROOT in tau-api/tau-worker, pointing at the active release) and a value in .env would override the unit and detach the running code from its own tree" ;;
+    FICUS_ROOT)
+      die "config: core.env may not set 'FICUS_ROOT' — it is unit-managed (Environment=FICUS_ROOT in tau-api/tau-worker, pointing at the active release) and a value in .env would override the unit and detach the running code from its own tree" ;;
   esac
 done <<<"${CORE_ENV_PAIRS}"
 
@@ -226,9 +226,9 @@ BACKUP_S3_ENDPOINT=$(cfg_get '.backup.s3_endpoint' '')
 BACKUP_S3_REGION=$(cfg_get '.backup.s3_region' '')
 BACKUP_S3_BUCKET=$(cfg_get '.backup.s3_bucket' '')
 BACKUP_S3_PREFIX=$(cfg_get '.backup.s3_prefix' '')
-BACKUP_S3_ACCESS_KEY_ENV=$(cfg_get '.backup.s3_access_key_env' 'TAU_BACKUP_S3_ACCESS_KEY')
-BACKUP_S3_SECRET_KEY_ENV=$(cfg_get '.backup.s3_secret_key_env' 'TAU_BACKUP_S3_SECRET_KEY')
-BACKUP_PASSPHRASE_ENV=$(cfg_get '.backup.passphrase_env' 'TAU_BACKUP_PASSPHRASE')
+BACKUP_S3_ACCESS_KEY_ENV=$(cfg_get '.backup.s3_access_key_env' 'FICUS_BACKUP_S3_ACCESS_KEY')
+BACKUP_S3_SECRET_KEY_ENV=$(cfg_get '.backup.s3_secret_key_env' 'FICUS_BACKUP_S3_SECRET_KEY')
+BACKUP_PASSPHRASE_ENV=$(cfg_get '.backup.passphrase_env' 'FICUS_BACKUP_PASSPHRASE')
 BACKUP_SCHEDULE=$(cfg_get '.backup.schedule' '03:15')
 BACKUP_ONCALENDAR='' BACKUP_HOME_DIR=''
 if [[ ${BACKUP_ENABLE} == true ]]; then
@@ -272,22 +272,22 @@ if [[ ${BACKUP_ENABLE} == true ]]; then
 fi
 
 # Optional restore-from-backup (cloud control plane only). When
-# TAU_SETUP_RESTORE_URL is set, phase_restore (between the database and env
+# FICUS_SETUP_RESTORE_URL is set, phase_restore (between the database and env
 # phases) downloads that presigned archive, decrypts it with
-# $TAU_SETUP_RESTORE_PASSPHRASE, pg_restores the dump, lays down the workspace
-# tree, and carries the archived TAU_ENCRYPTION_KEY forward. All three arrive
+# $FICUS_SETUP_RESTORE_PASSPHRASE, pg_restores the dump, lays down the workspace
+# tree, and carries the archived FICUS_ENCRYPTION_KEY forward. All three arrive
 # as forwarded env vars (provision.sh's FORWARD_ENVS), never in the yaml — the
 # URL and passphrase are credentials. RESTORE_PASSPHRASE is deliberately NOT
 # captured into a global here: phase_restore reads it straight from the
 # environment into a 0600 passfile, minimizing its exposure window.
-RESTORE_URL=${TAU_SETUP_RESTORE_URL:-}
-RESTORE_STRIP_CREDENTIALS=${TAU_SETUP_RESTORE_STRIP_CREDENTIALS:-0}
+RESTORE_URL=${FICUS_SETUP_RESTORE_URL:-}
+RESTORE_STRIP_CREDENTIALS=${FICUS_SETUP_RESTORE_STRIP_CREDENTIALS:-0}
 
 DB_MODE=$(cfg_get '.database.mode' 'container')
-DB_DSN_CFG=${TAU_SETUP_DATABASE_DSN:-$(cfg_get '.database.dsn')}
+DB_DSN_CFG=${FICUS_SETUP_DATABASE_DSN:-$(cfg_get '.database.dsn')}
 # CA certificate for an external postgres, on THIS host — provision.sh pushes
 # it into <remote dir>/keys/ and rewrites this key to match, exactly like the
-# origin cert. phase_database installs it at lib.sh's TAU_DB_CA_PATH.
+# origin cert. phase_database installs it at lib.sh's FICUS_DB_CA_PATH.
 DB_CA_PATH=$(expand_tilde "$(cfg_get '.database.ca_path')")
 # Platform-managed artifact STAGING DIRECTORY, on THIS host — provision.sh scp's
 # it into <remote dir>/artifacts and rewrites this key to match, exactly like
@@ -302,7 +302,7 @@ DB_VOLUME='tau-pgdata'
 case "${DB_MODE}" in
   container) ;;
   external)
-    [[ -n ${DB_DSN_CFG} ]] || die "config: database.mode=external needs database.dsn (or \$TAU_SETUP_DATABASE_DSN)"
+    [[ -n ${DB_DSN_CFG} ]] || die "config: database.mode=external needs database.dsn (or \$FICUS_SETUP_DATABASE_DSN)"
     # verify-full has no fallback: with no CA to verify against, EVERY
     # connection fails closed. Say so here, while it is still a config error
     # with an obvious fix, instead of letting it surface later as an opaque
@@ -315,7 +315,7 @@ case "${DB_MODE}" in
 esac
 
 # runtime.sandbox is REQUIRED and explicit — there is no default and no
-# auto-detection (the core itself refuses to start without TAU_SANDBOX_RUNTIME),
+# auto-detection (the core itself refuses to start without FICUS_SANDBOX_RUNTIME),
 # so a config that never chose one must fail here rather than silently install a
 # runtime nobody picked.
 # Trimmed at the read site: this value is compared against `vm` below AND
@@ -328,7 +328,7 @@ require_sandbox_runtime "${RT_SANDBOX}"
 # Under `host` there is no sandbox image to pin gh in, so agents run this
 # machine's gh; warn (never abort) when it cannot serve `gh --attach`.
 check_host_runtime_gh "${RT_SANDBOX}"
-# Identity mapping: runtime.sandbox and TAU_SANDBOX_RUNTIME name the same five
+# Identity mapping: runtime.sandbox and FICUS_SANDBOX_RUNTIME name the same five
 # values, so what the config chose is exactly what lands in the .env.
 SANDBOX_RUNTIME_ENV=${RT_SANDBOX}
 
@@ -383,58 +383,58 @@ ENV_FILE="${SRC_DEST}/.env"
 # ============================================================== secrets
 
 # Values live only in shell variables and <dest>/.env (0600) — never in yaml.
-TAU_ENC_VALUE='' TAU_PW_VALUE='' AI_KEY_VALUE='' DB_PASSWORD='' TAU_EVENT_TOKEN_VALUE=''
+FICUS_ENC_VALUE='' FICUS_PW_VALUE='' AI_KEY_VALUE='' DB_PASSWORD='' FICUS_EVENT_TOKEN_VALUE=''
 ENC_SOURCE='' PW_SOURCE='' AI_KEY_SOURCE='' EVENT_TOKEN_SOURCE='' PW_GENERATED=0 DB_PW_RECOVERED=0
 BACKUP_S3_ACCESS_KEY_VALUE='' BACKUP_S3_SECRET_KEY_VALUE='' BACKUP_PASSPHRASE_VALUE=''
 
 valid_env_name() { [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; }
 
 resolve_secrets() {
-  # TAU_ENCRYPTION_KEY — encrypts the DB secret store; MUST be stable across
+  # FICUS_ENCRYPTION_KEY — encrypts the DB secret store; MUST be stable across
   # re-runs or the store becomes unreadable, so <dest>/.env wins over generate.
   if [[ -n ${SEC_ENC_ENV} ]] && valid_env_name "${SEC_ENC_ENV}" && [[ -n ${!SEC_ENC_ENV:-} ]]; then
-    TAU_ENC_VALUE=${!SEC_ENC_ENV}
+    FICUS_ENC_VALUE=${!SEC_ENC_ENV}
     ENC_SOURCE="\$${SEC_ENC_ENV}"
-  elif TAU_ENC_VALUE=$(envfile_get "${ENV_FILE}" 'TAU_ENCRYPTION_KEY') && [[ -n ${TAU_ENC_VALUE} ]]; then
+  elif FICUS_ENC_VALUE=$(envfile_get "${ENV_FILE}" 'FICUS_ENCRYPTION_KEY') && [[ -n ${FICUS_ENC_VALUE} ]]; then
     ENC_SOURCE="existing ${ENV_FILE}"
   elif [[ ${DRY_RUN} -eq 1 ]]; then
-    TAU_ENC_VALUE='<generated-at-run-time>'
+    FICUS_ENC_VALUE='<generated-at-run-time>'
     ENC_SOURCE='generated (openssl rand -hex 32)'
   else
-    TAU_ENC_VALUE=$(gen_hex_secret 32)
+    FICUS_ENC_VALUE=$(gen_hex_secret 32)
     ENC_SOURCE='generated (openssl rand -hex 32)'
   fi
 
-  # TAU_PASSWORD — the bootstrap bearer; self-disables on first admin passkey.
+  # FICUS_PASSWORD — the bootstrap bearer; self-disables on first admin passkey.
   if [[ -n ${SEC_PW_ENV} ]] && valid_env_name "${SEC_PW_ENV}" && [[ -n ${!SEC_PW_ENV:-} ]]; then
-    TAU_PW_VALUE=${!SEC_PW_ENV}
+    FICUS_PW_VALUE=${!SEC_PW_ENV}
     PW_SOURCE="\$${SEC_PW_ENV}"
-  elif TAU_PW_VALUE=$(envfile_get "${ENV_FILE}" 'TAU_PASSWORD') && [[ -n ${TAU_PW_VALUE} ]]; then
+  elif FICUS_PW_VALUE=$(envfile_get "${ENV_FILE}" 'FICUS_PASSWORD') && [[ -n ${FICUS_PW_VALUE} ]]; then
     PW_SOURCE="existing ${ENV_FILE}"
   elif [[ ${DRY_RUN} -eq 1 ]]; then
-    TAU_PW_VALUE='<generated-at-run-time>'
+    FICUS_PW_VALUE='<generated-at-run-time>'
     PW_SOURCE='generated (openssl rand -hex 32)'
   else
-    TAU_PW_VALUE=$(gen_hex_secret 32)
+    FICUS_PW_VALUE=$(gen_hex_secret 32)
     PW_SOURCE='generated (openssl rand -hex 32)'
     PW_GENERATED=1
   fi
 
-  # TAU_INTERNAL_EVENT_TOKEN — shared secret authenticating the loopback HTTP
+  # FICUS_INTERNAL_EVENT_TOKEN — shared secret authenticating the loopback HTTP
   # event transport between tau-api and tau-worker (agent control signals,
   # event forwarding, secret invalidation). Both units read THIS .env, which is
   # what lets them agree on one value. Without it, both derive the token from
-  # TAU_ENCRYPTION_KEY; only if both are absent do random per-process tokens
+  # FICUS_ENCRYPTION_KEY; only if both are absent do random per-process tokens
   # make every cross-process post fail closed.
-  # Unlike TAU_ENCRYPTION_KEY, rotating it is harmless — both units restart
+  # Unlike FICUS_ENCRYPTION_KEY, rotating it is harmless — both units restart
   # together — but preserving it keeps re-runs from churning the file.
-  if TAU_EVENT_TOKEN_VALUE=$(envfile_get "${ENV_FILE}" 'TAU_INTERNAL_EVENT_TOKEN') && [[ -n ${TAU_EVENT_TOKEN_VALUE} ]]; then
+  if FICUS_EVENT_TOKEN_VALUE=$(envfile_get "${ENV_FILE}" 'FICUS_INTERNAL_EVENT_TOKEN') && [[ -n ${FICUS_EVENT_TOKEN_VALUE} ]]; then
     EVENT_TOKEN_SOURCE="existing ${ENV_FILE}"
   elif [[ ${DRY_RUN} -eq 1 ]]; then
-    TAU_EVENT_TOKEN_VALUE='<generated-at-run-time>'
+    FICUS_EVENT_TOKEN_VALUE='<generated-at-run-time>'
     EVENT_TOKEN_SOURCE='generated (openssl rand -hex 32)'
   else
-    TAU_EVENT_TOKEN_VALUE=$(gen_hex_secret 32)
+    FICUS_EVENT_TOKEN_VALUE=$(gen_hex_secret 32)
     EVENT_TOKEN_SOURCE='generated (openssl rand -hex 32)'
   fi
 
@@ -503,14 +503,14 @@ resolve_secrets() {
 
 resolve_secrets
 
-# On a restore, TAU_ENCRYPTION_KEY is carried forward from the archived .env
+# On a restore, FICUS_ENCRYPTION_KEY is carried forward from the archived .env
 # rather than generated (otherwise every encrypted secret in the restored DB
 # is undecryptable). The real-run override happens in phase_restore, before
 # phase_env renders the file; here we only fix up the dry-run PLAN so it
 # reflects the true source. Gated on RESTORE_URL so a non-restore config's
 # dry-run output stays byte-for-byte identical.
 if [[ -n ${RESTORE_URL} && ${DRY_RUN} -eq 1 ]]; then
-  TAU_ENC_VALUE='<carried from restored backup>'
+  FICUS_ENC_VALUE='<carried from restored backup>'
   ENC_SOURCE='restored backup envelope (extracted at run time)'
 fi
 
@@ -533,10 +533,10 @@ redact_unless_placeholder() {
 build_env_content() { # redact|real
   local mode=$1 enc pw key tok dsn core_env
   if [[ ${mode} == redact ]]; then
-    enc=$(redact_unless_placeholder "${TAU_ENC_VALUE}")
-    pw=$(redact_unless_placeholder "${TAU_PW_VALUE}")
+    enc=$(redact_unless_placeholder "${FICUS_ENC_VALUE}")
+    pw=$(redact_unless_placeholder "${FICUS_PW_VALUE}")
     key=$(redact_unless_placeholder "${AI_KEY_VALUE}")
-    tok=$(redact_unless_placeholder "${TAU_EVENT_TOKEN_VALUE}")
+    tok=$(redact_unless_placeholder "${FICUS_EVENT_TOKEN_VALUE}")
     dsn=$(db_dsn '<redacted>')
     [[ ${DB_MODE} == external ]] && dsn='<external dsn, redacted>'
     # *_ENV-indirected core.env values are secrets — redact them too. Literal
@@ -544,7 +544,7 @@ build_env_content() { # redact|real
     # only changes *_ENV rendering), so this is just CORE_ENV_PAIRS redacted.
     core_env=$(cfg_env_pairs '.core.env' redact)
   else
-    enc=${TAU_ENC_VALUE} pw=${TAU_PW_VALUE} key=${AI_KEY_VALUE} tok=${TAU_EVENT_TOKEN_VALUE}
+    enc=${FICUS_ENC_VALUE} pw=${FICUS_PW_VALUE} key=${AI_KEY_VALUE} tok=${FICUS_EVENT_TOKEN_VALUE}
     dsn=$(db_dsn "${DB_PASSWORD}")
     core_env=${CORE_ENV_PAIRS}
   fi
@@ -562,29 +562,29 @@ DATABASE_URL=${dsn}
 # everything downstream already assumes.
 HOST=127.0.0.1
 PORT=${CORE_PORT}
-TAU_API_URL=http://127.0.0.1:${CORE_PORT}
-# APP_URL and TAU_WEB_ORIGIN MUST equal the exact browser-facing origin
+FICUS_API_URL=http://127.0.0.1:${CORE_PORT}
+# APP_URL and FICUS_WEB_ORIGIN MUST equal the exact browser-facing origin
 # (scheme://host[:port], no path) or WebAuthn passkey registration fails.
 APP_URL=${CORE_ORIGIN}
-TAU_WEB_ORIGIN=${CORE_ORIGIN}
-TAU_ENCRYPTION_KEY=${enc}
+FICUS_WEB_ORIGIN=${CORE_ORIGIN}
+FICUS_ENCRYPTION_KEY=${enc}
 # Bootstrap bearer — fully privileged ONLY until the first admin passkey
 # exists, then it self-disables.
-TAU_PASSWORD=${pw}
+FICUS_PASSWORD=${pw}
 # tau-api and tau-worker exchange events over authenticated HTTP instead of pg
 # LISTEN/NOTIFY. The worker binds loopback by default; supported split-namespace
 # deployments may override it to a private interface. The token authenticates
 # BOTH directions and MUST be identical in both units, which is
 # why it lives in this shared EnvironmentFile. Override the port via core.env
 # if 3003 is already taken on this host.
-TAU_WORKER_EVENT_PORT=3003
-TAU_INTERNAL_EVENT_TOKEN=${tok}
-TAU_SANDBOX_RUNTIME=${SANDBOX_RUNTIME_ENV}
-TAU_SYSTEM_LOG_PROVIDER=systemd
-TAU_SERVE_WEB=${CORE_SERVE_WEB}
+FICUS_WORKER_EVENT_PORT=3003
+FICUS_INTERNAL_EVENT_TOKEN=${tok}
+FICUS_SANDBOX_RUNTIME=${SANDBOX_RUNTIME_ENV}
+FICUS_SYSTEM_LOG_PROVIDER=systemd
+FICUS_SERVE_WEB=${CORE_SERVE_WEB}
 EOF
   if [[ ${RT_SANDBOX} == vm ]]; then
-    printf 'TAU_EXE_MACHINE_IMAGE=%s\n' "${EXE_IMAGE}"
+    printf 'FICUS_EXE_MACHINE_IMAGE=%s\n' "${EXE_IMAGE}"
   fi
   if [[ -n ${AI_KEY_TARGET} && -n ${AI_KEY_VALUE} ]]; then
     printf '# Provider key (also seeded into the encrypted store via the API).\n'
@@ -652,7 +652,7 @@ install_update_sudoers() {
 if [[ ${DRY_RUN} -eq 1 ]]; then
   log_step "DRY RUN — printing the plan; nothing will be executed or modified"
   printf '\nPhase 0 — preflight\n'
-  plan "assert: Linux + systemd (PID 1) + Ubuntu 24.04 (override: TAU_SETUP_SKIP_OS_CHECK=1)"
+  plan "assert: Linux + systemd (PID 1) + Ubuntu 24.04 (override: FICUS_SETUP_SKIP_OS_CHECK=1)"
   if [[ ${SRC_MODE} == artifact ]]; then
     plan "ensure: curl jq openssl ca-certificates (apt; git dropped — artifact mode never clones), mikefarah yq v4, bun (official installer)"
   else
@@ -673,7 +673,7 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
     artifact)
       # Never the URL VALUES — they are presigned GET credentials borne by
       # the environment, not the config file. Only the env var NAMES appear.
-      plan "download + verify: TAU_ARTIFACT_TARBALL_URL / TAU_ARTIFACT_MANIFEST_URL / TAU_ARTIFACT_SIG_URL (presigned GET URLs, env-borne — values never printed) against TAU_ARTIFACT_PUBKEY_B64 (Ed25519 signature)"
+      plan "download + verify: FICUS_ARTIFACT_TARBALL_URL / FICUS_ARTIFACT_MANIFEST_URL / FICUS_ARTIFACT_SIG_URL (presigned GET URLs, env-borne — values never printed) against FICUS_ARTIFACT_PUBKEY_B64 (Ed25519 signature)"
       plan "stage the verified release under ${SRC_DEST}/releases/<sha>-<digest12> (idempotent: re-verifies and re-stages on re-run)"
       ;;
   esac
@@ -685,7 +685,7 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
     plan "bun install --ignore-scripts   # skips the root postinstall (submodules + extensions)"
     plan "bun run extensions:install     # the root postinstall step we still need"
     plan "(cd apps/core && bun run build)  → dist/index.js + dist/worker.js"
-    [[ ${CORE_SERVE_WEB} == true ]] && plan "bun run build:web  → apps/web/dist (served by core, TAU_SERVE_WEB)"
+    [[ ${CORE_SERVE_WEB} == true ]] && plan "bun run build:web  → apps/web/dist (served by core, FICUS_SERVE_WEB)"
   fi
   printf '\nPhase 3 — database (%s)\n' "${DB_MODE}"
   if [[ ${DB_MODE} == container ]]; then
@@ -694,26 +694,26 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
     plan "wait: pg_isready; ensure database 'tau' exists (reuses container + password from ${ENV_FILE} on re-run)"
   else
     [[ -n ${DB_CA_PATH} ]] &&
-      plan "install ${DB_CA_PATH} → ${TAU_DB_CA_PATH} (0644 root; a CA certificate is public, and the app/worker/pg_dump all read it)"
-    plan "use external DSN from config/\$TAU_SETUP_DATABASE_DSN; TCP-probe host before migrating"
+      plan "install ${DB_CA_PATH} → ${FICUS_DB_CA_PATH} (0644 root; a CA certificate is public, and the app/worker/pg_dump all read it)"
+    plan "use external DSN from config/\$FICUS_SETUP_DATABASE_DSN; TCP-probe host before migrating"
   fi
   if [[ -n ${RESTORE_URL} ]]; then
     printf '\nPhase 3.5 — restore from backup\n'
     # NEVER print the URL's query string — for a presigned S3 GET it is the
     # credential. Everything after '?' is stripped.
     plan "download the encrypted backup from ${RESTORE_URL%%\?*} (presigned GET; query string omitted — it is a credential)"
-    plan "decrypt (openssl aes-256-cbc/pbkdf2, passphrase via \$TAU_SETUP_RESTORE_PASSPHRASE, never argv) + untar to a 0700 temp dir"
+    plan "decrypt (openssl aes-256-cbc/pbkdf2, passphrase via \$FICUS_SETUP_RESTORE_PASSPHRASE, never argv) + untar to a 0700 temp dir"
     plan "pg_restore --clean --if-exists --no-owner the db.dump into the tenant database — BEFORE the migrate phase, which then fast-forwards if the code is newer"
     plan "unpack the archived HOME_DIR tree into ${BACKUP_HOME_DIR:-<run_user home>/.tau} (before services start)"
-    plan "carry TAU_ENCRYPTION_KEY forward from the archived .env (else the restored DB's encrypted secrets are unreadable)"
+    plan "carry FICUS_ENCRYPTION_KEY forward from the archived .env (else the restored DB's encrypted secrets are unreadable)"
     [[ ${RESTORE_STRIP_CREDENTIALS} == 1 ]] &&
       plan "cross-subdomain restore: DELETE FROM user_credentials (WebAuthn passkeys are origin-bound; users are kept)"
     plan "temp dir + downloaded archive are removed regardless of outcome; any failure dies (a half-restored instance fails the provision)"
   fi
   printf '\nPhase 4 — %s (umask 077; secrets redacted below)\n' "${ENV_FILE}"
-  plan "TAU_ENCRYPTION_KEY from: ${ENC_SOURCE}"
-  plan "TAU_PASSWORD (bootstrap bearer) from: ${PW_SOURCE}"
-  plan "TAU_INTERNAL_EVENT_TOKEN (api↔worker event transport) from: ${EVENT_TOKEN_SOURCE}"
+  plan "FICUS_ENCRYPTION_KEY from: ${ENC_SOURCE}"
+  plan "FICUS_PASSWORD (bootstrap bearer) from: ${PW_SOURCE}"
+  plan "FICUS_INTERNAL_EVENT_TOKEN (api↔worker event transport) from: ${EVENT_TOKEN_SOURCE}"
   [[ ${AI_SECTION_PRESENT} -eq 1 && ${AI_PROVIDER} != openai-codex ]] && plan "AI provider key from: ${AI_KEY_SOURCE}"
   build_env_content redact | sed 's/^/  | /'
   printf '\nPhase 5 — migrate\n'
@@ -725,10 +725,10 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
   if [[ -n ${ARTIFACTS_DIR} ]]; then
     printf '\nPhase 5.5 — platform-managed artifacts (from %s)\n' "${ARTIFACTS_DIR}"
     if [[ -f ${ARTIFACTS_DIR}/managed.env ]]; then
-      plan "install managed.env → ${TAU_MANAGED_ENV_PATH} (0600 root; env credential VALUES never printed)"
+      plan "install managed.env → ${FICUS_MANAGED_ENV_PATH} (0600 root; env credential VALUES never printed)"
     fi
     if [[ -f ${ARTIFACTS_DIR}/manifest ]]; then
-      plan "install files → ${TAU_ARTIFACTS_DIR}/ per manifest (modes + names below; file CONTENTS never printed):"
+      plan "install files → ${FICUS_ARTIFACTS_DIR}/ per manifest (modes + names below; file CONTENTS never printed):"
       sed 's/^/  | /' "${ARTIFACTS_DIR}/manifest"
     fi
   fi
@@ -790,10 +790,10 @@ phase_preflight() {
     # shellcheck source=/dev/null
     source /etc/os-release
     if [[ ${ID:-} != ubuntu || ${VERSION_ID:-} != 24.04 ]]; then
-      if [[ ${TAU_SETUP_SKIP_OS_CHECK:-0} == 1 ]]; then
-        log_warn "untested OS ${ID:-?} ${VERSION_ID:-?} (expected Ubuntu 24.04) — continuing per TAU_SETUP_SKIP_OS_CHECK=1"
+      if [[ ${FICUS_SETUP_SKIP_OS_CHECK:-0} == 1 ]]; then
+        log_warn "untested OS ${ID:-?} ${VERSION_ID:-?} (expected Ubuntu 24.04) — continuing per FICUS_SETUP_SKIP_OS_CHECK=1"
       else
-        die "expected Ubuntu 24.04, found ${ID:-?} ${VERSION_ID:-?} (set TAU_SETUP_SKIP_OS_CHECK=1 to try anyway)"
+        die "expected Ubuntu 24.04, found ${ID:-?} ${VERSION_ID:-?} (set FICUS_SETUP_SKIP_OS_CHECK=1 to try anyway)"
       fi
     fi
   fi
@@ -851,27 +851,27 @@ phase_preflight() {
   # it so the two can never diverge. The literal below is a fallback for the
   # (pathological) no-checkout case AND the anchor the bun-version gate keeps in
   # lockstep with .bun-version — enforced by .github/bun-version-gate.test.ts.
-  TAU_BUN_VERSION="1.4.2"
+  FICUS_BUN_VERSION="1.4.2"
   # Unquoted final assignment (`=${var}`, not `="…"`) on purpose: the gate
-  # matches the single literal pin above via `^\s*TAU_BUN_VERSION="…"`, and a
+  # matches the single literal pin above via `^\s*FICUS_BUN_VERSION="…"`, and a
   # second quoted assignment here would register as a divergent pin.
   _tau_bun_version_file="${SCRIPT_DIR}/../../.bun-version"
   if [[ -f "${_tau_bun_version_file}" ]]; then
     _tau_bun_version_pinned=$(tr -d '[:space:]' <"${_tau_bun_version_file}")
-    [[ -n "${_tau_bun_version_pinned}" ]] && TAU_BUN_VERSION=${_tau_bun_version_pinned}
+    [[ -n "${_tau_bun_version_pinned}" ]] && FICUS_BUN_VERSION=${_tau_bun_version_pinned}
   fi
-  if have bun && [[ "$(bun --version)" != "${TAU_BUN_VERSION}" ]]; then
-    log_info "bun $(bun --version) does not match pinned ${TAU_BUN_VERSION} — reinstalling"
+  if have bun && [[ "$(bun --version)" != "${FICUS_BUN_VERSION}" ]]; then
+    log_info "bun $(bun --version) does not match pinned ${FICUS_BUN_VERSION} — reinstalling"
   fi
-  if ! have bun || [[ "$(bun --version)" != "${TAU_BUN_VERSION}" ]]; then
-    log_info "installing bun ${TAU_BUN_VERSION} (official installer, pinned)"
-    curl -fsSL https://bun.sh/install | bash -s "bun-v${TAU_BUN_VERSION}"
+  if ! have bun || [[ "$(bun --version)" != "${FICUS_BUN_VERSION}" ]]; then
+    log_info "installing bun ${FICUS_BUN_VERSION} (official installer, pinned)"
+    curl -fsSL https://bun.sh/install | bash -s "bun-v${FICUS_BUN_VERSION}"
     export BUN_INSTALL="${HOME}/.bun"
     export PATH="${BUN_INSTALL}/bin:${PATH}"
   fi
   require_cmd bun "bun install failed — check network access to bun.sh"
-  if [[ "$(bun --version)" != "${TAU_BUN_VERSION}" ]]; then
-    die "bun version $(bun --version) still does not match pinned ${TAU_BUN_VERSION} after install"
+  if [[ "$(bun --version)" != "${FICUS_BUN_VERSION}" ]]; then
+    die "bun version $(bun --version) still does not match pinned ${FICUS_BUN_VERSION} after install"
   fi
   log_info "bun: $(command -v bun) ($(bun --version))"
   id -u "${RUN_USER}" >/dev/null 2>&1 ||
@@ -967,9 +967,9 @@ phase_source() {
     ARTIFACT_PUBKEY_FILE=$(mktemp)
     chmod 600 "${ARTIFACT_PUBKEY_FILE}"
     trap 'rm -f "${ARTIFACT_PUBKEY_FILE}"' EXIT
-    printf '%s' "${TAU_ARTIFACT_PUBKEY_B64}" | base64 -d >"${ARTIFACT_PUBKEY_FILE}" 2>/dev/null ||
-      die "TAU_ARTIFACT_PUBKEY_B64 is not valid base64"
-    [[ -s ${ARTIFACT_PUBKEY_FILE} ]] || die "TAU_ARTIFACT_PUBKEY_B64 decoded to an empty public key"
+    printf '%s' "${FICUS_ARTIFACT_PUBKEY_B64}" | base64 -d >"${ARTIFACT_PUBKEY_FILE}" 2>/dev/null ||
+      die "FICUS_ARTIFACT_PUBKEY_B64 is not valid base64"
+    [[ -s ${ARTIFACT_PUBKEY_FILE} ]] || die "FICUS_ARTIFACT_PUBKEY_B64 decoded to an empty public key"
 
     # artifact_acquire EXITS (it does not return) on failure, printing its
     # reason token on stdout — so it has to be captured, and its status has
@@ -981,9 +981,9 @@ phase_source() {
     # `|| _artifact_fail`/`|| die`, because a bare failing command in there
     # would NOT abort the substitution on its own.
     acq='' rc=0
-    acq=$(artifact_acquire "${SRC_DEST}" "${TAU_ARTIFACT_TARBALL_URL}" "${TAU_ARTIFACT_MANIFEST_URL}" "${TAU_ARTIFACT_SIG_URL}" "${ARTIFACT_PUBKEY_FILE}") || rc=$?
+    acq=$(artifact_acquire "${SRC_DEST}" "${FICUS_ARTIFACT_TARBALL_URL}" "${FICUS_ARTIFACT_MANIFEST_URL}" "${FICUS_ARTIFACT_SIG_URL}" "${ARTIFACT_PUBKEY_FILE}") || rc=$?
     if [[ ${rc} -ne 0 ]]; then
-      # The TAU_ARTIFACT_ERROR=<token> line went into ${acq}, not onto the
+      # The FICUS_ARTIFACT_ERROR=<token> line went into ${acq}, not onto the
       # log stream — re-emit it or the control plane never learns why this
       # failed.
       printf '%s\n' "${acq}"
@@ -1088,7 +1088,7 @@ phase_database() {
   log_info "database ready"
 }
 
-# Restore-from-backup — runs ONLY when TAU_SETUP_RESTORE_URL is set, between
+# Restore-from-backup — runs ONLY when FICUS_SETUP_RESTORE_URL is set, between
 # phase_database and phase_env. Ordering is load-bearing:
 #   * AFTER phase_database  — the tenant database (external mode: created by the
 #     control plane before the toolkit runs; container mode: created above)
@@ -1096,7 +1096,7 @@ phase_database() {
 #   * BEFORE phase_migrate  — the dump carries the drizzle __drizzle_migrations
 #     table, so restoring first lets the subsequent migrate phase FAST-FORWARD
 #     (apply only migrations newer than the backup) instead of re-running them.
-#   * BEFORE phase_env      — the archived TAU_ENCRYPTION_KEY is carried forward
+#   * BEFORE phase_env      — the archived FICUS_ENCRYPTION_KEY is carried forward
 #     into the rendered .env (overriding the generated one), so the restored
 #     DB's encrypted secret store stays readable.
 #   * BEFORE phase_services — the workspace tree is laid down before the app
@@ -1106,9 +1106,9 @@ phase_database() {
 # are always cleaned up.
 phase_restore() {
   phase_step restore "phase 3.5/8: restore from backup"
-  local passphrase=${TAU_SETUP_RESTORE_PASSPHRASE:-}
+  local passphrase=${FICUS_SETUP_RESTORE_PASSPHRASE:-}
   [[ -n ${passphrase} ]] ||
-    die "restore: TAU_SETUP_RESTORE_URL is set but TAU_SETUP_RESTORE_PASSPHRASE is empty — cannot decrypt the archive"
+    die "restore: FICUS_SETUP_RESTORE_URL is set but FICUS_SETUP_RESTORE_PASSPHRASE is empty — cannot decrypt the archive"
 
   local dsn
   dsn=$(db_dsn "${DB_PASSWORD}")
@@ -1177,16 +1177,16 @@ phase_restore() {
     log_warn "restore: archive carried no workspace directory — skipping HOME_DIR restore"
   fi
 
-  # (c) carry TAU_ENCRYPTION_KEY forward from the archived .env, overriding the
+  # (c) carry FICUS_ENCRYPTION_KEY forward from the archived .env, overriding the
   # value resolve_secrets computed. phase_env (next) renders the .env from
   # these globals, so the restored DB's encrypted secret store stays readable.
   local archived_key
-  archived_key=$(envfile_get "${workdir}/.env" 'TAU_ENCRYPTION_KEY' || true)
+  archived_key=$(envfile_get "${workdir}/.env" 'FICUS_ENCRYPTION_KEY' || true)
   [[ -n ${archived_key} ]] ||
-    die "restore: archived .env carried no TAU_ENCRYPTION_KEY — the restored DB's secrets would be permanently undecryptable"
-  TAU_ENC_VALUE=${archived_key}
+    die "restore: archived .env carried no FICUS_ENCRYPTION_KEY — the restored DB's secrets would be permanently undecryptable"
+  FICUS_ENC_VALUE=${archived_key}
   ENC_SOURCE='restored backup envelope'
-  log_info "carried TAU_ENCRYPTION_KEY forward from the restored backup"
+  log_info "carried FICUS_ENCRYPTION_KEY forward from the restored backup"
 
   # (d) cross-subdomain restore: WebAuthn passkeys are bound to the origin they
   # were registered against, so credentials from the old subdomain can never
@@ -1214,7 +1214,7 @@ phase_env() {
   # a gutted EnvironmentFile. No placeholder check: env values are arbitrary
   # secrets/DSNs. Owned by the invoking user (who owns ${SRC_DEST}), 0600.
   install_rendered 0600 "$(id -un)" "$(id -gn)" "${ENV_FILE}" build_env_content real
-  log_info "wrote ${ENV_FILE} (0600) — APP_URL=TAU_WEB_ORIGIN=${CORE_ORIGIN}"
+  log_info "wrote ${ENV_FILE} (0600) — APP_URL=FICUS_WEB_ORIGIN=${CORE_ORIGIN}"
 }
 
 # Platform-managed artifacts (SES env creds, APNs cert files, ...). Installs
@@ -1311,7 +1311,7 @@ phase_seed() {
   # Secrets travel as exported env vars in a subshell — NOT as `env KEY=VALUE`
   # arguments, which would put them in the env process's ps-visible argv.
   (
-    export TAU_PASSWORD="${TAU_PW_VALUE}"
+    export FICUS_PASSWORD="${FICUS_PW_VALUE}"
     if [[ -n ${AI_KEY_VALUE} && ${AI_KEY_VALUE} != '<'*'>' ]]; then
       export "${AI_KEY_ENV}=${AI_KEY_VALUE}"
     fi
@@ -1367,9 +1367,9 @@ phase_report() {
    2. Create your account — the FIRST passkey registered becomes the system
       admin ${code_note}.
 
- Bootstrap token (TAU_PASSWORD):
+ Bootstrap token (FICUS_PASSWORD):
 EOF
-  render_bootstrap_token_block "${PW_GENERATED}" "${TAU_PW_VALUE}" "${PW_SOURCE}" "${ENV_FILE}"
+  render_bootstrap_token_block "${PW_GENERATED}" "${FICUS_PW_VALUE}" "${PW_SOURCE}" "${ENV_FILE}"
   cat <<EOF
    This token is fully privileged ONLY while no admin exists. It disables
    itself automatically the moment the first admin passkey is created —

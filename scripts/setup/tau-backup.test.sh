@@ -6,8 +6,8 @@
 # environment); instead it renders the template directly with the same
 # @TOKEN@ substitutions setup-host.sh's render_backup_script() performs, then
 # runs the rendered script for real against a scratch DEST/.env + HOME_DIR
-# tree and a fake pg_dump (via the TAU_BACKUP_PG_DUMP_CMD test seam — no live
-# postgres needed), with TAU_BACKUP_DRY_RUN=1 so it stops before contacting
+# tree and a fake pg_dump (via the FICUS_BACKUP_PG_DUMP_CMD test seam — no live
+# postgres needed), with FICUS_BACKUP_DRY_RUN=1 so it stops before contacting
 # S3. Asserts the resulting encrypted artifact decrypts + untars back to
 # exactly the inputs (db dump, HOME_DIR tree, .env).
 #
@@ -54,7 +54,7 @@ RENDERED="${SCRATCH}/tau-backup.sh"
 DECRYPT_DIR="${SCRATCH}/decrypted"
 
 mkdir -p "${DEST}" "${HOME_DIR}/workspace/agent-1" "${DECRYPT_DIR}"
-printf 'TAU_ENCRYPTION_KEY=test-encryption-key-envelope\nDATABASE_URL=postgres://postgres:pw@127.0.0.1:5432/tau\n' >"${DEST}/.env"
+printf 'FICUS_ENCRYPTION_KEY=test-encryption-key-envelope\nDATABASE_URL=postgres://postgres:pw@127.0.0.1:5432/tau\n' >"${DEST}/.env"
 printf 'agent memory contents\n' >"${HOME_DIR}/workspace/agent-1/notes.md"
 printf 'shared context\n' >"${HOME_DIR}/context.md"
 
@@ -78,11 +78,11 @@ expect_eq 'no @TOKEN@ placeholders left unrendered' "${unrendered_rc}" '0'
 
 # --- backup.env (0600) with a passphrase; S3 creds are fake/unused in dry run
 PASSPHRASE='test-passphrase-do-not-use-in-prod'
-printf 'TAU_BACKUP_S3_ACCESS_KEY=unused-in-dry-run\nTAU_BACKUP_S3_SECRET_KEY=unused-in-dry-run\nTAU_BACKUP_PASSPHRASE=%s\n' "${PASSPHRASE}" >"${BACKUP_ENV_FILE}"
+printf 'FICUS_BACKUP_S3_ACCESS_KEY=unused-in-dry-run\nFICUS_BACKUP_S3_SECRET_KEY=unused-in-dry-run\nFICUS_BACKUP_PASSPHRASE=%s\n' "${PASSPHRASE}" >"${BACKUP_ENV_FILE}"
 chmod 600 "${BACKUP_ENV_FILE}"
 
 # --- fake pg_dump seam: write deterministic content instead of shelling to a
-# live postgres (see tau-backup.sh.tmpl's TAU_BACKUP_PG_DUMP_CMD test seam).
+# live postgres (see tau-backup.sh.tmpl's FICUS_BACKUP_PG_DUMP_CMD test seam).
 FAKE_DUMP_CONTENT='FAKE-PG-DUMP-CONTENT-1234'
 FAKE_PG_DUMP="${SCRATCH}/fake-pg-dump.sh"
 cat >"${FAKE_PG_DUMP}" <<EOF
@@ -94,13 +94,13 @@ chmod 755 "${FAKE_PG_DUMP}"
 
 # --- run the rendered script for real, dry-run (stops before upload/retention)
 set +e
-TAU_BACKUP_DRY_RUN=1 \
-  TAU_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
-  TAU_BACKUP_WORKDIR="${WORKDIR}" \
+FICUS_BACKUP_DRY_RUN=1 \
+  FICUS_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
+  FICUS_BACKUP_WORKDIR="${WORKDIR}" \
   "${RENDERED}"
 run_rc=$?
 set -e
-expect_eq 'rendered tau-backup.sh exits 0 under TAU_BACKUP_DRY_RUN=1' "${run_rc}" '0'
+expect_eq 'rendered tau-backup.sh exits 0 under FICUS_BACKUP_DRY_RUN=1' "${run_rc}" '0'
 
 TODAY=$(date -u '+%Y-%m-%d')
 ENC_FILE="${WORKDIR}/${TODAY}.tar.gz.enc"
@@ -116,7 +116,7 @@ expect_file_exists 'decryption with the correct passphrase succeeds' "${DECRYPTE
 tar -xzf "${DECRYPTED_TAR}" -C "${DECRYPT_DIR}"
 
 expect_eq 'db.dump round-trips' "$(cat "${DECRYPT_DIR}/db.dump" 2>/dev/null || echo MISSING)" "${FAKE_DUMP_CONTENT}"
-expect_eq '.env round-trips (carries TAU_ENCRYPTION_KEY into the envelope)' \
+expect_eq '.env round-trips (carries FICUS_ENCRYPTION_KEY into the envelope)' \
   "$(cat "${DECRYPT_DIR}/.env" 2>/dev/null || echo MISSING)" \
   "$(cat "${DEST}/.env")"
 expect_eq 'HOME_DIR file round-trips (context.md)' \
@@ -130,7 +130,7 @@ openssl enc -d -aes-256-cbc -pbkdf2 -pass 'pass:wrong-passphrase' -in "${ENC_FIL
 expect_eq 'decryption with the WRONG passphrase fails (non-zero exit)' "$([[ ${wrong_rc} -ne 0 ]] && echo yes || echo no)" 'yes'
 
 # --- Finding 1 (review): a mid-run failure (e.g. the S3 upload step dying)
-# must leave NO workdir/artifact behind — only TAU_BACKUP_DRY_RUN=1 may do
+# must leave NO workdir/artifact behind — only FICUS_BACKUP_DRY_RUN=1 may do
 # that. Force the upload to fail via a `curl` function override, exported so
 # the rendered script's own `#!/usr/bin/env bash` process inherits it (a
 # forced-failure seam — no real/unreachable network call needed).
@@ -138,8 +138,8 @@ FAIL_WORKDIR="${SCRATCH}/fail-work"
 curl() { return 1; }
 export -f curl
 set +e
-TAU_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
-  TAU_BACKUP_WORKDIR="${FAIL_WORKDIR}" \
+FICUS_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
+  FICUS_BACKUP_WORKDIR="${FAIL_WORKDIR}" \
   "${RENDERED}" >/dev/null 2>"${SCRATCH}/fail-run.stderr"
 fail_run_rc=$?
 set -e
@@ -192,8 +192,8 @@ export -f curl
 export DELETE_LOG LIST_BODY_FILE
 
 set +e
-TAU_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
-  TAU_BACKUP_WORKDIR="${RETENTION_WORKDIR}" \
+FICUS_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
+  FICUS_BACKUP_WORKDIR="${RETENTION_WORKDIR}" \
   "${RENDERED}" >/dev/null 2>"${SCRATCH}/retention-run.stderr"
 retention_run_rc=$?
 set -e
@@ -228,9 +228,9 @@ curl() {
 }
 export -f curl
 export CURL_ARGS_LOG
-TAU_TERMINATION_BACKUP_EFFECT_ID="${EFFECT_ID}" \
-  TAU_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
-  TAU_BACKUP_WORKDIR="${SCRATCH}/termination-work" \
+FICUS_TERMINATION_BACKUP_EFFECT_ID="${EFFECT_ID}" \
+  FICUS_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
+  FICUS_BACKUP_WORKDIR="${SCRATCH}/termination-work" \
   "${RENDERED}" >/dev/null 2>"${SCRATCH}/termination.stderr"
 unset -f curl
 expect_eq 'termination backup uploads to its immutable effect-scoped key' \
@@ -248,17 +248,17 @@ curl() {
   return 0
 }
 export -f curl
-TAU_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
-  TAU_BACKUP_WORKDIR="${SCRATCH}/ordinary-work" \
+FICUS_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
+  FICUS_BACKUP_WORKDIR="${SCRATCH}/ordinary-work" \
   "${RENDERED}" >/dev/null 2>"${SCRATCH}/ordinary.stderr"
 unset -f curl
 expect_eq 'ordinary nightly upload sends no termination metadata' \
   "$([[ $(cat "${CURL_ARGS_LOG}") == *'x-amz-meta-tau-termination-backup-effect-id'* ]] && echo leaked || echo absent)" 'absent'
 
 malformed_rc=0
-TAU_TERMINATION_BACKUP_EFFECT_ID='../other' \
-  TAU_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
-  TAU_BACKUP_WORKDIR="${SCRATCH}/malformed-effect-work" \
+FICUS_TERMINATION_BACKUP_EFFECT_ID='../other' \
+  FICUS_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
+  FICUS_BACKUP_WORKDIR="${SCRATCH}/malformed-effect-work" \
   "${RENDERED}" >/dev/null 2>"${SCRATCH}/malformed-effect.stderr" || malformed_rc=$?
 expect_eq 'malformed termination effect ID is rejected' "$([[ ${malformed_rc} -ne 0 ]] && echo yes || echo no)" 'yes'
 expect_eq 'malformed termination effect rejection names canonical UUID requirement' \

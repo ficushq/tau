@@ -327,12 +327,12 @@ describe('tau-browser service', () => {
 
   // R-B17: the docker-dev box server runs un-su-exec'd (as `root`), so
   // browser-proxy sends x-tau-box-user:root, which never matches the prod
-  // box_<hex> gate. TAU_BROWSER_DEV_ALLOW_USER (an env prod NEVER sets) admits
+  // box_<hex> gate. FICUS_BROWSER_DEV_ALLOW_USER (an env prod NEVER sets) admits
   // exactly that one non-box user, still filename-safe. These pin: dev user
   // authenticates ONLY with the env; the prod gate is intact without it; a
   // traversal-shaped dev user is refused; box_<hex> is unaffected either way.
   describe('R-B17 docker-dev auth escape hatch', () => {
-    const ENV_KEY = 'TAU_BROWSER_DEV_ALLOW_USER'
+    const ENV_KEY = 'FICUS_BROWSER_DEV_ALLOW_USER'
     const saved = process.env[ENV_KEY]
 
     afterEach(() => {

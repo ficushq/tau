@@ -30,12 +30,12 @@ log_step() { printf '\n%s %s==>%s %s\n' "$(_ts)" "$_C_STEP" "$_C_OFF" "$*" >&2; 
 # Total number of phase_step call sites in setup-host.sh. Pinned by a test in
 # lib.test.sh so adding a phase without a marker fails CI rather than silently
 # freezing a customer's progress display.
-TAU_PHASE_TOTAL=13
+FICUS_PHASE_TOTAL=13
 _tau_phase_n=0
 
 # Announce a phase on two channels at once:
 #   - the human banner on stderr, exactly as log_step always printed it;
-#   - TAU_PHASE=<ordinal>/<total> <slug> on STDOUT, which is the only stream
+#   - FICUS_PHASE=<ordinal>/<total> <slug> on STDOUT, which is the only stream
 #     run-toolkit.ts scans (pump(proc.stdout, true), stderr false).
 #
 # The slug is the contract; the ordinal is diagnostics. The control plane maps
@@ -45,7 +45,7 @@ phase_step() { # SLUG HUMAN_TEXT...
   local slug=$1
   shift
   _tau_phase_n=$((_tau_phase_n + 1))
-  printf 'TAU_PHASE=%s/%s %s\n' "${_tau_phase_n}" "${TAU_PHASE_TOTAL}" "${slug}"
+  printf 'FICUS_PHASE=%s/%s %s\n' "${_tau_phase_n}" "${FICUS_PHASE_TOTAL}" "${slug}"
   log_step "$@"
 }
 # Dry-run plan lines go to stdout so they can be captured/reviewed.
@@ -80,7 +80,7 @@ require_cmd() { # NAME [INSTALL_HINT]
 # attach screenshots with it, so anywhere an agent runs gh, this is the floor.
 # Kept beside the sandbox images' own pin (packages/k8s-sandbox/Dockerfile,
 # apps/core/docker-sandbox/Dockerfile) — bump all three together.
-TAU_MIN_GH_VERSION='2.99.0'
+FICUS_MIN_GH_VERSION='2.99.0'
 
 # Print a command's semver, or nothing when it cannot be parsed.
 # `gh --version` prints "gh version 2.99.0 (2026-...)"; the sed keeps the digits.
@@ -114,13 +114,13 @@ version_at_least() { # INSTALLED MINIMUM
 check_host_runtime_gh() { # SANDBOX_RUNTIME
   [ "$1" = host ] || return 0
   if ! have gh; then
-    log_warn "gh is not installed. Under the 'host' sandbox runtime agents use this machine's gh, and agent prompts tell them to attach screenshots with 'gh --attach' (needs ${TAU_MIN_GH_VERSION}+). Install gh to enable it."
+    log_warn "gh is not installed. Under the 'host' sandbox runtime agents use this machine's gh, and agent prompts tell them to attach screenshots with 'gh --attach' (needs ${FICUS_MIN_GH_VERSION}+). Install gh to enable it."
     return 0
   fi
   local v
   v=$(cmd_semver gh)
-  if ! version_at_least "${v}" "${TAU_MIN_GH_VERSION}"; then
-    log_warn "gh ${v:-(unknown version)} is older than ${TAU_MIN_GH_VERSION}. Under the 'host' sandbox runtime agents use this machine's gh, and 'gh --attach' — which agent prompts tell them to use — will fail until it is upgraded."
+  if ! version_at_least "${v}" "${FICUS_MIN_GH_VERSION}"; then
+    log_warn "gh ${v:-(unknown version)} is older than ${FICUS_MIN_GH_VERSION}. Under the 'host' sandbox runtime agents use this machine's gh, and 'gh --attach' — which agent prompts tell them to use — will fail until it is upgraded."
   fi
 }
 
@@ -207,7 +207,7 @@ managed_user_home() { # RUN_USER
 
 ensure_system_bun_node() { # RUN_USER SOURCE_BUN
   local run_user=$1 source_bun=$2
-  local system_bin=${TAU_SYSTEM_BIN_DIR:-/usr/local/bin}
+  local system_bin=${FICUS_SYSTEM_BIN_DIR:-/usr/local/bin}
   local system_bun="${system_bin}/bun" system_node="${system_bin}/node"
   local run_home smoke output
 
@@ -343,18 +343,18 @@ is_stdout_tty() { [[ -t 1 ]]; }
 # journal, `ssh host ... > out.log`, CI artifacts, a wrapper script's log
 # file, ...) would otherwise permanently leak a fully-privileged bootstrap
 # credential into a captured log. The not-generated case (an existing
-# TAU_PASSWORD, from env or a prior run's .env) already never printed the
+# FICUS_PASSWORD, from env or a prior run's .env) already never printed the
 # value itself, so it's unaffected either way. `is_stdout_tty` is called
 # indirectly (not inlined as `[[ -t 1 ]]`) so lib.test.sh can override it the
 # same way it already overrides `is_tty` for resolve_exe_key_path.
-render_bootstrap_token_block() { # PW_GENERATED TAU_PW_VALUE PW_SOURCE ENV_FILE
+render_bootstrap_token_block() { # PW_GENERATED FICUS_PW_VALUE PW_SOURCE ENV_FILE
   local generated=$1 value=$2 source=$3 env_file=$4
   if [[ ${generated} -eq 1 ]]; then
     if is_stdout_tty; then
       printf '   %s\n' "${value}"
       printf '   (printed once — also stored in %s)\n' "${env_file}"
     else
-      printf '   Bootstrap token withheld (non-interactive run); read TAU_PASSWORD from %s if needed.\n' "${env_file}"
+      printf '   Bootstrap token withheld (non-interactive run); read FICUS_PASSWORD from %s if needed.\n' "${env_file}"
     fi
   else
     printf '   from %s (not re-printed)\n' "${source}"
@@ -374,13 +374,13 @@ prompt_value() { # PROMPT VAR_NAME [silent]
 }
 
 # The complete, closed set of sandbox runtimes — the SAME five the core's
-# TAU_SANDBOX_RUNTIME accepts (apps/core/src/services/sandbox/runtime.ts).
-TAU_SANDBOX_RUNTIMES='docker-sysbox, docker-socket, k8s, vm, host'
+# FICUS_SANDBOX_RUNTIME accepts (apps/core/src/services/sandbox/runtime.ts).
+FICUS_SANDBOX_RUNTIMES='docker-sysbox, docker-socket, k8s, vm, host'
 
 # Validate a runtime.sandbox value, or die naming every supported one.
 #
 # There is no default and no auto-detection anywhere in the stack: the core
-# refuses to start without TAU_SANDBOX_RUNTIME, so a config that never chose a
+# refuses to start without FICUS_SANDBOX_RUNTIME, so a config that never chose a
 # runtime must fail on the control machine rather than install a runtime nobody
 # picked and surface as a host that boots and cannot run a single agent. The
 # retired spellings get their rename hint instead of a bare rejection — they
@@ -405,18 +405,18 @@ require_sandbox_runtime() { # VALUE
   # the second line of defence, not the only one.
   value=$(trim_ws "${1:-}")
   [[ -n ${value} ]] ||
-    die "config: runtime.sandbox is required — one of ${TAU_SANDBOX_RUNTIMES} (see docs/wiki/sandbox-runtimes.md)"
+    die "config: runtime.sandbox is required — one of ${FICUS_SANDBOX_RUNTIMES} (see docs/wiki/sandbox-runtimes.md)"
   case "${value}" in
     docker-sysbox | docker-socket | k8s | vm | host) return 0 ;;
     sysbox) hint=' — use docker-sysbox' ;;
     socket) hint=' — use docker-socket' ;;
     auto | docker) hint=' — auto-detection was removed, choose docker-sysbox or docker-socket' ;;
   esac
-  die "config: runtime.sandbox must be one of ${TAU_SANDBOX_RUNTIMES} (got '${value}')${hint}"
+  die "config: runtime.sandbox must be one of ${FICUS_SANDBOX_RUNTIMES} (got '${value}')${hint}"
 }
 
 # Refuse to restart tau-api/tau-worker against an env file that does not name a
-# supported TAU_SANDBOX_RUNTIME.
+# supported FICUS_SANDBOX_RUNTIME.
 #
 # An upgrade deliberately rewrites no .env — that is what makes it runnable long
 # after provisioning without re-supplying a single secret. But the runtime is
@@ -432,8 +432,8 @@ require_sandbox_runtime() { # VALUE
 require_env_file_sandbox_runtime() { # ENV_FILE
   local file=$1 value='' hint=''
   [[ -f ${file} ]] ||
-    die "TAU_SANDBOX_RUNTIME preflight: env file '${file}' not found — the services read it at startup, so an upgrade cannot verify what they would come back as"
-  value=$(envfile_get "${file}" TAU_SANDBOX_RUNTIME || true)
+    die "FICUS_SANDBOX_RUNTIME preflight: env file '${file}' not found — the services read it at startup, so an upgrade cannot verify what they would come back as"
+  value=$(envfile_get "${file}" FICUS_SANDBOX_RUNTIME || true)
   # Tolerate `KEY="value"` / `KEY='value'` and stray whitespace: systemd's
   # EnvironmentFile strips the quotes, so those are the same setting.
   value=${value#[\"\']}
@@ -441,14 +441,14 @@ require_env_file_sandbox_runtime() { # ENV_FILE
   value=${value#"${value%%[![:space:]]*}"}
   value=${value%"${value##*[![:space:]]}"}
   [[ -n ${value} ]] ||
-    die "TAU_SANDBOX_RUNTIME is not set in ${file} — tau-api and tau-worker refuse to start without it, so restarting them now would take this instance DOWN. Add one of ${TAU_SANDBOX_RUNTIMES} to that file (see docs/wiki/sandbox-runtimes.md) and re-run."
+    die "FICUS_SANDBOX_RUNTIME is not set in ${file} — tau-api and tau-worker refuse to start without it, so restarting them now would take this instance DOWN. Add one of ${FICUS_SANDBOX_RUNTIMES} to that file (see docs/wiki/sandbox-runtimes.md) and re-run."
   case "${value}" in
     docker-sysbox | docker-socket | k8s | vm | host) return 0 ;;
     sysbox) hint=' — this host predates the rename: use docker-sysbox' ;;
     socket) hint=' — this host predates the rename: use docker-socket' ;;
     auto | docker) hint=' — auto-detection was removed, choose docker-sysbox or docker-socket' ;;
   esac
-  die "TAU_SANDBOX_RUNTIME in ${file} must be one of ${TAU_SANDBOX_RUNTIMES} (got '${value}')${hint}. tau-api and tau-worker refuse to start otherwise, so restarting them now would take this instance DOWN; fix that file and re-run."
+  die "FICUS_SANDBOX_RUNTIME in ${file} must be one of ${FICUS_SANDBOX_RUNTIMES} (got '${value}')${hint}. tau-api and tau-worker refuse to start otherwise, so restarting them now would take this instance DOWN; fix that file and re-run."
 }
 
 # Resolve runtime.exe.ssh_key_path for `runtime.sandbox: vm`, tolerating an
@@ -575,7 +575,7 @@ cfg_bool() { # .dotted.path DEFAULT(true|false)
 # as a normal yq assignment.
 cfg_set() { # .dotted.path VALUE
   local path=$1
-  TAU_CFG_SET_VALUE=$2 yq -i "${path} = strenv(TAU_CFG_SET_VALUE)" "${CFG_FILE}" ||
+  FICUS_CFG_SET_VALUE=$2 yq -i "${path} = strenv(FICUS_CFG_SET_VALUE)" "${CFG_FILE}" ||
     die "failed to write ${path} to ${CFG_FILE}"
 }
 
@@ -1132,8 +1132,8 @@ install_origin_cert() { # CERT_SRC KEY_SRC [CERT_DEST KEY_DEST]
 # mismatch is not a degradation but a total connection failure, because
 # verify-full has no fallback to fall back to. That is the point: `require`
 # would happily connect to an impostor.
-TAU_DB_CA_DIR='/etc/tau'
-TAU_DB_CA_PATH="${TAU_DB_CA_DIR}/database-ca.crt"
+FICUS_DB_CA_DIR='/etc/tau'
+FICUS_DB_CA_PATH="${FICUS_DB_CA_DIR}/database-ca.crt"
 
 # Install the supplied database CA to the canonical path above.
 #
@@ -1145,9 +1145,9 @@ TAU_DB_CA_PATH="${TAU_DB_CA_DIR}/database-ca.crt"
 install_database_ca() { # CA_SRC
   local ca=$1
   [[ -f ${ca} ]] || die "database.ca_path: CA certificate not found: ${ca}"
-  as_root install -d -m 0755 -o root -g root "${TAU_DB_CA_DIR}"
-  as_root install -m 0644 -o root -g root "${ca}" "${TAU_DB_CA_PATH}"
-  log_info "installed database CA ${TAU_DB_CA_PATH} (0644)"
+  as_root install -d -m 0755 -o root -g root "${FICUS_DB_CA_DIR}"
+  as_root install -m 0644 -o root -g root "${ca}" "${FICUS_DB_CA_PATH}"
+  log_info "installed database CA ${FICUS_DB_CA_PATH} (0644)"
 }
 
 # ------------------------------------------------------ managed artifacts
@@ -1163,11 +1163,11 @@ install_database_ca() { # CA_SRC
 #   <stage>/files/<target>   -> /etc/tau/artifacts/<target>        [file artifacts]
 #   <stage>/manifest          "<mode> <target>" per file artifact
 #
-# TAU_MANAGED_ENV_PATH is half of a two-sided contract: the OTHER half is the
+# FICUS_MANAGED_ENV_PATH is half of a two-sided contract: the OTHER half is the
 # `EnvironmentFile=-/etc/tau/managed.env` line in systemd/tau-api.service.tmpl
 # and tau-worker.service.tmpl. Change one and you must change the other.
 #
-# TAU_ARTIFACTS_DIR is EXCLUSIVELY artifact-managed: nothing but these install
+# FICUS_ARTIFACTS_DIR is EXCLUSIVELY artifact-managed: nothing but these install
 # functions ever writes into it. Everything else the toolkit places lives
 # elsewhere — the database CA at /etc/tau/database-ca.crt, managed.env at
 # /etc/tau/managed.env (both SIBLINGS of this dir, never inside it), Caddy TLS
@@ -1175,10 +1175,10 @@ install_database_ca() { # CA_SRC
 # exclusivity is what makes prune_artifacts safe: any file in this dir that
 # the current manifest doesn't list can only be a leftover of a DELETED
 # artifact, so removing it is reconciliation, not collateral damage.
-TAU_ARTIFACTS_DIR='/etc/tau/artifacts'
-TAU_MANAGED_ENV_PATH='/etc/tau/managed.env'
+FICUS_ARTIFACTS_DIR='/etc/tau/artifacts'
+FICUS_MANAGED_ENV_PATH='/etc/tau/managed.env'
 # Where the tau-api/tau-worker units live (overridden in lib.test.sh).
-TAU_SYSTEMD_UNIT_DIR='/etc/systemd/system'
+FICUS_SYSTEMD_UNIT_DIR='/etc/systemd/system'
 
 # Install the staged managed.env (all platform-managed env credentials) to the
 # canonical path the units reference. 0600 root — it holds live credentials.
@@ -1189,12 +1189,12 @@ install_managed_env() { # STAGE_DIR
   local stage=$1
   local src="${stage}/managed.env"
   [[ -f ${src} ]] || return 0
-  as_root install -d -m 0755 -o root -g root "$(dirname "${TAU_MANAGED_ENV_PATH}")"
-  install_rendered 0600 root root "${TAU_MANAGED_ENV_PATH}" cat "${src}"
-  log_info "installed ${TAU_MANAGED_ENV_PATH} (0600)"
+  as_root install -d -m 0755 -o root -g root "$(dirname "${FICUS_MANAGED_ENV_PATH}")"
+  install_rendered 0600 root root "${FICUS_MANAGED_ENV_PATH}" cat "${src}"
+  log_info "installed ${FICUS_MANAGED_ENV_PATH} (0600)"
 }
 
-# Install staged artifact FILES to TAU_ARTIFACTS_DIR, each with the mode
+# Install staged artifact FILES to FICUS_ARTIFACTS_DIR, each with the mode
 # recorded in the staging manifest. No-op when there is no manifest. File-kind
 # artifacts (e.g. APNs certificates) are read per-use by the app, so installing
 # or updating one does NOT restart any service — only a managed.env change
@@ -1203,7 +1203,7 @@ install_artifacts() { # STAGE_DIR
   local stage=$1
   local manifest="${stage}/manifest"
   [[ -f ${manifest} ]] || return 0
-  as_root install -d -m 0755 -o root -g root "${TAU_ARTIFACTS_DIR}"
+  as_root install -d -m 0755 -o root -g root "${FICUS_ARTIFACTS_DIR}"
   local mode target src
   while read -r mode target; do
     [[ -n ${mode} && -n ${target} ]] || continue
@@ -1215,8 +1215,8 @@ install_artifacts() { # STAGE_DIR
     [[ ${mode} =~ ^0[0-7]{3}$ ]] || die "install_artifacts: invalid mode '${mode}' for '${target}'"
     src="${stage}/files/${target}"
     [[ -f ${src} ]] || die "install_artifacts: staged file missing for '${target}': ${src}"
-    install_rendered "${mode}" root root "${TAU_ARTIFACTS_DIR}/${target}" cat "${src}"
-    log_info "installed ${TAU_ARTIFACTS_DIR}/${target} (${mode})"
+    install_rendered "${mode}" root root "${FICUS_ARTIFACTS_DIR}/${target}" cat "${src}"
+    log_info "installed ${FICUS_ARTIFACTS_DIR}/${target} (${mode})"
   done <"${manifest}"
 }
 
@@ -1243,30 +1243,30 @@ managed_env_would_change() { # STAGE_DIR
     echo 0
     return 0
   fi
-  if [[ -f ${TAU_MANAGED_ENV_PATH} ]]; then
-    if cmp -s "${src}" "${TAU_MANAGED_ENV_PATH}"; then echo 0; else echo 1; fi
+  if [[ -f ${FICUS_MANAGED_ENV_PATH} ]]; then
+    if cmp -s "${src}" "${FICUS_MANAGED_ENV_PATH}"; then echo 0; else echo 1; fi
   else
     # KEY=VALUE lines start with a non-#, non-blank character.
     if grep -q '^[^#[:space:]]' "${src}"; then echo 1; else echo 0; fi
   fi
 }
 
-# Remove every file under TAU_ARTIFACTS_DIR that the staging manifest does NOT
+# Remove every file under FICUS_ARTIFACTS_DIR that the staging manifest does NOT
 # list — the deletion half of reconciliation: an artifact deleted from the
 # platform registry vanishes from the manifest, and this sweeps its installed
-# file off the host. Constrained BY CONSTRUCTION to TAU_ARTIFACTS_DIR: names
+# file off the host. Constrained BY CONSTRUCTION to FICUS_ARTIFACTS_DIR: names
 # come from globbing that directory itself (basename only, no recursion), and
 # removal re-joins them onto the same fixed root — nothing outside the dir can
 # ever be touched. Safe because the dir is exclusively artifact-managed (see
-# the TAU_ARTIFACTS_DIR comment above). Fails safe twice over: no manifest
+# the FICUS_ARTIFACTS_DIR comment above). Fails safe twice over: no manifest
 # means "set unknown — prune nothing", and a missing dir means nothing to do.
 prune_artifacts() { # STAGE_DIR
   local stage=$1
   local manifest="${stage}/manifest"
   [[ -f ${manifest} ]] || return 0
-  [[ -d ${TAU_ARTIFACTS_DIR} ]] || return 0
+  [[ -d ${FICUS_ARTIFACTS_DIR} ]] || return 0
   local existing name mode target keep
-  for existing in "${TAU_ARTIFACTS_DIR}"/*; do
+  for existing in "${FICUS_ARTIFACTS_DIR}"/*; do
     [[ -e ${existing} || -L ${existing} ]] || continue # empty-dir glob literal
     name=$(basename -- "${existing}")
     keep=0
@@ -1275,8 +1275,8 @@ prune_artifacts() { # STAGE_DIR
       if [[ ${target} == "${name}" ]]; then keep=1; fi
     done <"${manifest}"
     if [[ ${keep} -eq 0 ]]; then
-      as_root rm -f -- "${TAU_ARTIFACTS_DIR}/${name}"
-      log_info "pruned ${TAU_ARTIFACTS_DIR}/${name} (no longer in the artifact manifest)"
+      as_root rm -f -- "${FICUS_ARTIFACTS_DIR}/${name}"
+      log_info "pruned ${FICUS_ARTIFACTS_DIR}/${name} (no longer in the artifact manifest)"
     fi
   done
 }
@@ -1303,8 +1303,8 @@ ensure_managed_env_dropins() {
   local unit unit_file dropin content
   content=$'[Service]\nEnvironmentFile=-/etc/tau/managed.env'
   for unit in tau-api tau-worker; do
-    unit_file="${TAU_SYSTEMD_UNIT_DIR}/${unit}.service"
-    dropin="${TAU_SYSTEMD_UNIT_DIR}/${unit}.service.d/managed-env.conf"
+    unit_file="${FICUS_SYSTEMD_UNIT_DIR}/${unit}.service"
+    dropin="${FICUS_SYSTEMD_UNIT_DIR}/${unit}.service.d/managed-env.conf"
     if [[ -f ${unit_file} ]] && grep -qF '/etc/tau/managed.env' "${unit_file}"; then
       continue # unit already loads managed.env inline
     fi
@@ -1372,7 +1372,7 @@ install_core_units() { # TEMPLATE_DIR
   local template_dir=$1 unit
   for unit in tau-api tau-worker; do
     install_rendered --check-placeholders 0644 root root \
-      "${TAU_SYSTEMD_UNIT_DIR}/${unit}.service" \
+      "${FICUS_SYSTEMD_UNIT_DIR}/${unit}.service" \
       render_core_unit "${template_dir}/${unit}.service.tmpl"
   done
 }
@@ -1394,11 +1394,11 @@ tau_api_memory_guardrail_content() {
 }
 
 # shellcheck disable=SC2034 # consumed by maintenance scripts and tests
-TAU_API_MEMORY_GUARDRAIL_CHANGED=0
+FICUS_API_MEMORY_GUARDRAIL_CHANGED=0
 ensure_tau_api_memory_guardrail() {
-  TAU_API_MEMORY_GUARDRAIL_CHANGED=0
-  local unit_file="${TAU_SYSTEMD_UNIT_DIR}/tau-api.service"
-  local dropin_dir="${TAU_SYSTEMD_UNIT_DIR}/tau-api.service.d"
+  FICUS_API_MEMORY_GUARDRAIL_CHANGED=0
+  local unit_file="${FICUS_SYSTEMD_UNIT_DIR}/tau-api.service"
+  local dropin_dir="${FICUS_SYSTEMD_UNIT_DIR}/tau-api.service.d"
   local content effective=0 candidate
   content=$(tau_api_memory_guardrail_content)
 
@@ -1450,7 +1450,7 @@ ensure_tau_api_memory_guardrail() {
   fi
   as_root install -d -m 0755 -o root -g root "${dropin_dir}"
   install_rendered 0644 root root "${dropin}" printf '%s\n' "${content}"
-  TAU_API_MEMORY_GUARDRAIL_CHANGED=1
+  FICUS_API_MEMORY_GUARDRAIL_CHANGED=1
   log_info "installed ${dropin} (made the canonical tau-api memory policy the effective final assignment)"
 }
 
@@ -1460,12 +1460,12 @@ ensure_tau_api_memory_guardrail() {
 # tau-backup.sh.tmpl) is an openssl-encrypted gzip tar whose top-level members
 # are, exactly: `db.dump` (a `pg_dump -Fc` custom-format dump), the HOME_DIR
 # tree (a single directory, e.g. `.tau/`), and the instance `.env` (which
-# carries TAU_ENCRYPTION_KEY). This decrypts + extracts one, asserting the
+# carries FICUS_ENCRYPTION_KEY). This decrypts + extracts one, asserting the
 # envelope shape, so setup-host.sh's phase_restore can pg_restore the dump,
 # lay down the workspace tree, and carry the encryption key forward.
 #
 # The passphrase is read from PASSFILE (a 0600 tmpfile the caller writes from
-# $TAU_SETUP_RESTORE_PASSPHRASE) and NEVER passed on argv — same discipline as
+# $FICUS_SETUP_RESTORE_PASSPHRASE) and NEVER passed on argv — same discipline as
 # tau-backup.sh.tmpl's own `-pass file:` encryption. The openssl parameters
 # here (aes-256-cbc + pbkdf2) mirror that template exactly; changing one side
 # without the other makes every existing backup undecryptable.
@@ -1686,7 +1686,7 @@ install_fstab_atomically() { # SOURCE FSTAB
 }
 
 ensure_swap_fstab_entry() { # PATH
-  local path=$1 fstab=${TAU_SWAP_FSTAB:-/etc/fstab}
+  local path=$1 fstab=${FICUS_SWAP_FSTAB:-/etc/fstab}
   local counts matching canonical temp
   counts=$(awk -v path="${path}" '
     $1 == path && $3 == "swap" { matching++ }
@@ -1815,9 +1815,9 @@ render_backup_env_content() { # MODE(real|redact) ACCESS_KEY SECRET_KEY PASSPHRA
 # encryption passphrase. 0600 root-owned; read by tau-backup.sh. Never log or
 # print these values in full. Values are single-quoted so this file sources
 # safely even if a secret contains spaces, \$(...), or backticks.
-TAU_BACKUP_S3_ACCESS_KEY=$(sh_single_quote "${access}")
-TAU_BACKUP_S3_SECRET_KEY=$(sh_single_quote "${secret}")
-TAU_BACKUP_PASSPHRASE=$(sh_single_quote "${passphrase}")
+FICUS_BACKUP_S3_ACCESS_KEY=$(sh_single_quote "${access}")
+FICUS_BACKUP_S3_SECRET_KEY=$(sh_single_quote "${secret}")
+FICUS_BACKUP_PASSPHRASE=$(sh_single_quote "${passphrase}")
 EOF
 }
 
@@ -1962,7 +1962,7 @@ s3_list_probe() { # ENDPOINT REGION BUCKET PREFIX ACCESS SECRET
 
 # ------------------------------------------------------------------ tau API
 
-# Callers set TAU_API_BASE (e.g. http://127.0.0.1:3000) and TAU_BEARER.
+# Callers set FICUS_API_BASE (e.g. http://127.0.0.1:3000) and FICUS_BEARER.
 API_STATUS=''
 API_BODY=''
 
@@ -1972,7 +1972,7 @@ API_BODY=''
 # and the request body arrives on stdin via --data-binary @-.
 _api_curl_auth_config() {
   # curl config quoted strings honor \\ and \" escapes — escape exactly those.
-  local b=${TAU_BEARER//\\/\\\\}
+  local b=${FICUS_BEARER//\\/\\\\}
   printf 'header = "Authorization: Bearer %s"\n' "${b//\"/\\\"}"
 }
 
@@ -1984,9 +1984,9 @@ api_request() { # METHOD PATH [JSON_BODY]
   if [[ -n ${body} ]]; then
     args+=(-H 'Content-Type: application/json' --data-binary @-)
     API_STATUS=$(printf '%s' "${body}" |
-      curl --config <(_api_curl_auth_config) "${args[@]}" "${TAU_API_BASE}${path}") || rc=$?
+      curl --config <(_api_curl_auth_config) "${args[@]}" "${FICUS_API_BASE}${path}") || rc=$?
   else
-    API_STATUS=$(curl --config <(_api_curl_auth_config) "${args[@]}" "${TAU_API_BASE}${path}" </dev/null) || rc=$?
+    API_STATUS=$(curl --config <(_api_curl_auth_config) "${args[@]}" "${FICUS_API_BASE}${path}" </dev/null) || rc=$?
   fi
   if [[ ${rc} -eq 0 ]]; then
     API_BODY=$(cat "${tmp}")
@@ -2018,12 +2018,12 @@ api_is_up() { # BASE_URL
 # ------------------------------------------------------------------ bearer HTTP (VM/DNS providers)
 
 # Generic bearer-auth JSON HTTP, for provision.sh's VM/DNS provider APIs
-# (Hetzner, Cloudflare). Unlike api_request (one fixed TAU_API_BASE/TAU_BEARER
+# (Hetzner, Cloudflare). Unlike api_request (one fixed FICUS_API_BASE/FICUS_BEARER
 # pair) this takes BASE and TOKEN per call, since a single provision.sh run
 # talks to two providers with two different tokens. Same secrets doctrine as
 # api_request: the token travels via curl --config on a process-substitution
 # fd, the body via stdin — never argv. The transport command itself is
-# ${TAU_SETUP_HTTP_CMD:-curl} so tests can substitute a record-and-assert fake
+# ${FICUS_SETUP_HTTP_CMD:-curl} so tests can substitute a record-and-assert fake
 # without a real network (or shadowing the real `curl`, which api_request's
 # tests already use for their own purposes).
 HTTP_STATUS=''
@@ -2036,7 +2036,7 @@ _http_bearer_curl_config() { # TOKEN
 
 http_bearer_request() { # BASE TOKEN METHOD PATH [JSON_BODY]
   local base=$1 token=$2 method=$3 path=$4 body=${5:-}
-  local cmd=${TAU_SETUP_HTTP_CMD:-curl}
+  local cmd=${FICUS_SETUP_HTTP_CMD:-curl}
   local tmp rc=0
   tmp=$(mktemp)
   local args=(-sS -o "${tmp}" -w '%{http_code}' -X "${method}")
@@ -2289,11 +2289,11 @@ git_env_setup() {
       cat >"${GIT_ASKPASS_HELPER}" <<'EOF'
 #!/bin/sh
 # tau-setup GIT_ASKPASS helper — answers git credential prompts from the env.
-printf '%s\n' "${TAU_SETUP_GIT_TOKEN}"
+printf '%s\n' "${FICUS_SETUP_GIT_TOKEN}"
 EOF
       chmod 700 "${GIT_ASKPASS_HELPER}"
       trap cleanup_git_askpass EXIT
-      export TAU_SETUP_GIT_TOKEN="${token}"
+      export FICUS_SETUP_GIT_TOKEN="${token}"
       export GIT_ASKPASS="${GIT_ASKPASS_HELPER}"
       export GIT_TERMINAL_PROMPT=0
       ;;
@@ -2484,9 +2484,9 @@ build_stamp_is_current() { # SRC_DEST SERVE_WEB
   stamp=$(build_stamp_path "${src_dest}")
   [[ -f ${stamp} ]] || return 1
   head=$(git -C "${src_dest}" rev-parse HEAD 2>/dev/null) || return 1
-  stamp_commit=$(envfile_get "${stamp}" TAU_BUILD_COMMIT) || return 1
+  stamp_commit=$(envfile_get "${stamp}" FICUS_BUILD_COMMIT) || return 1
   [[ -n ${stamp_commit} && ${stamp_commit} == "${head}" ]] || return 1
-  stamp_lock=$(envfile_get "${stamp}" TAU_BUILD_LOCK_HASH) || return 1
+  stamp_lock=$(envfile_get "${stamp}" FICUS_BUILD_LOCK_HASH) || return 1
   [[ ${stamp_lock} == "$(build_lock_hash "${src_dest}")" ]] || return 1
   build_outputs_present "${src_dest}" "${serve_web}" || return 1
   # build_outputs_present only proved the paths exist; a truncated or
@@ -2495,16 +2495,16 @@ build_stamp_is_current() { # SRC_DEST SERVE_WEB
   # missing field — an older-format stamp, or a stamp written for a call that
   # didn't build that output — must NOT read as a match; it must fail closed
   # just like a missing stamp.
-  stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_CORE_INDEX)
+  stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_CORE_INDEX)
   [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/core/dist/index.js")" ]] || return 1
-  stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_CORE_WORKER)
+  stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_CORE_WORKER)
   [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/core/dist/worker.js")" ]] || return 1
-  stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_CORE_MIGRATE)
+  stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_CORE_MIGRATE)
   [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/core/dist/migrate.js")" ]] || return 1
-  stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_CLI_TAU)
+  stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_CLI_TAU)
   [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/cli/dist/tau.js")" ]] || return 1
   if [[ ${serve_web} == true ]]; then
-    stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_WEB_INDEX)
+    stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_WEB_INDEX)
     [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/web/dist/index.html")" ]] || return 1
   fi
   return 0
@@ -2526,16 +2526,16 @@ build_stamp_write() { # SRC_DEST SERVE_WEB
   local src_dest=$1 serve_web=$2 stamp
   stamp=$(build_stamp_path "${src_dest}")
   {
-    printf 'TAU_BUILD_COMMIT=%s\n' "$(git -C "${src_dest}" rev-parse HEAD)"
-    printf 'TAU_BUILD_LOCK_HASH=%s\n' "$(build_lock_hash "${src_dest}")"
-    printf 'TAU_BUILD_HASH_CORE_INDEX=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/index.js")"
-    printf 'TAU_BUILD_HASH_CORE_WORKER=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/worker.js")"
-    printf 'TAU_BUILD_HASH_CORE_MIGRATE=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/migrate.js")"
-    printf 'TAU_BUILD_HASH_CLI_TAU=%s\n' "$(build_output_hash "${src_dest}/apps/cli/dist/tau.js")"
+    printf 'FICUS_BUILD_COMMIT=%s\n' "$(git -C "${src_dest}" rev-parse HEAD)"
+    printf 'FICUS_BUILD_LOCK_HASH=%s\n' "$(build_lock_hash "${src_dest}")"
+    printf 'FICUS_BUILD_HASH_CORE_INDEX=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/index.js")"
+    printf 'FICUS_BUILD_HASH_CORE_WORKER=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/worker.js")"
+    printf 'FICUS_BUILD_HASH_CORE_MIGRATE=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/migrate.js")"
+    printf 'FICUS_BUILD_HASH_CLI_TAU=%s\n' "$(build_output_hash "${src_dest}/apps/cli/dist/tau.js")"
     if [[ ${serve_web} == true ]]; then
-      printf 'TAU_BUILD_HASH_WEB_INDEX=%s\n' "$(build_output_hash "${src_dest}/apps/web/dist/index.html")"
+      printf 'FICUS_BUILD_HASH_WEB_INDEX=%s\n' "$(build_output_hash "${src_dest}/apps/web/dist/index.html")"
     fi
-    printf 'TAU_BUILD_AT=%s\n' "$(date -u +%FT%TZ)"
+    printf 'FICUS_BUILD_AT=%s\n' "$(date -u +%FT%TZ)"
   } >"${stamp}"
 }
 
@@ -2553,7 +2553,7 @@ build_app() { # SRC_DEST SERVE_WEB(true|false)
   _tau_build_skipped=false
   if build_stamp_is_current "${src_dest}" "${serve_web}"; then
     local stamp_commit
-    stamp_commit=$(envfile_get "$(build_stamp_path "${src_dest}")" TAU_BUILD_COMMIT)
+    stamp_commit=$(envfile_get "$(build_stamp_path "${src_dest}")" FICUS_BUILD_COMMIT)
     log_info "build current for ${stamp_commit:0:12} (bun.lock unchanged, outputs present) — skipping rebuild"
     # See the big comment above: honestly re-asserting "these outputs are
     # current" for the upgrade path's external mtime probe.
@@ -2613,7 +2613,7 @@ upgrade_result_message() { # BEFORE_SHA AFTER_SHA BUILD_SKIPPED(true|false)
 run_db_migrations() { # SRC_DEST
   local src_dest=$1 attempt
   for attempt in 1 2 3; do
-    if (cd "${src_dest}/apps/core" && TAU_MIGRATE_LIVE=1 bun run db:migrate); then
+    if (cd "${src_dest}/apps/core" && FICUS_MIGRATE_LIVE=1 bun run db:migrate); then
       log_info "migrations complete"
       return 0
     fi
@@ -2751,12 +2751,12 @@ artifact_current_release_id() { # DEST
 }
 
 # The stdout trailer the control plane parses to learn what this run did.
-# TAU_RELEASE_ROLLED_BACK is emitted by artifact_activate itself (it is the
+# FICUS_RELEASE_ROLLED_BACK is emitted by artifact_activate itself (it is the
 # only code that knows whether the flip survived), so it is deliberately NOT
 # printed here — printing it twice would let a caller's stale value shadow the
 # real outcome.
 artifact_emit_release_trailer() { # BEFORE AFTER
-  printf 'TAU_RELEASE_BEFORE=%s\nTAU_RELEASE_AFTER=%s\n' "${1:-unknown}" "${2:-unknown}"
+  printf 'FICUS_RELEASE_BEFORE=%s\nFICUS_RELEASE_AFTER=%s\n' "${1:-unknown}" "${2:-unknown}"
 }
 
 # Abort an acquire: delete the half-downloaded incoming dir, print the machine
@@ -2773,7 +2773,7 @@ _artifact_fail() { # INCOMING_DIR TOKEN MESSAGE...
   shift 2
   log_error "$*"
   if [[ -n ${incoming} ]]; then rm -rf "${incoming}"; fi
-  printf 'TAU_ARTIFACT_ERROR=%s\n' "${token}"
+  printf 'FICUS_ARTIFACT_ERROR=%s\n' "${token}"
   exit 1
 }
 
@@ -2795,7 +2795,7 @@ _artifact_symlink_swap() { # TARGET LINK
 # also the RESUME signal (see below), so it is the trigger, not "releases/ is
 # absent".
 #
-# What does NOT move: `.env` (the secrets — TAU_ENCRYPTION_KEY among them —
+# What does NOT move: `.env` (the secrets — FICUS_ENCRYPTION_KEY among them —
 # live at <dest>/.env in BOTH layouts, which is exactly why the units keep
 # `EnvironmentFile=<dest>/.env` while their WorkingDirectory follows the run
 # root), `releases/` itself, `.tau-build-stamp` (a claim about a checkout that
@@ -2894,7 +2894,7 @@ _artifact_curl_download() { # OUT_FILE URL
 #              1) "<sha> <digest12>"
 #              2) the path of the verified, extracted tree (feed both to
 #                 artifact_stage)
-#   failure: one stdout line "TAU_ARTIFACT_ERROR=<token>" and a non-zero EXIT
+#   failure: one stdout line "FICUS_ARTIFACT_ERROR=<token>" and a non-zero EXIT
 #            (not a return — see _artifact_fail). Tokens: download_failed,
 #            sig_invalid, hash_mismatch, bun_mismatch, manifest_invalid.
 #
@@ -3104,7 +3104,7 @@ _artifact_discard_incoming() { # DEST TREE
 # value containing backticks or $(...) would EXECUTE, as root, from a file
 # whose whole purpose is to hold secrets nobody vets for shell syntax.
 #
-# TAU_ROOT is exported AFTER the file is read, so a TAU_ROOT that happens to
+# FICUS_ROOT is exported AFTER the file is read, so a FICUS_ROOT that happens to
 # live in .env (pointing at `current`, i.e. the OLD tree) cannot shadow the
 # candidate being migrated. The `|| [[ -n ${line} ]]` keeps a final line with
 # no trailing newline.
@@ -3113,21 +3113,21 @@ _ARTIFACT_MIGRATE_PROGRAM='while IFS= read -r line || [[ -n ${line} ]]; do
   if [[ -z ${line} || ${line} == \#* || ${line} != *=* ]]; then continue; fi
   export "${line%%=*}=${line#*=}"
 done <"$1"
-export TAU_ROOT="$2"
+export FICUS_ROOT="$2"
 cd "$2/apps/core" && exec bun dist/migrate.js'
 
 # Put a staged release into service: migrate from the CANDIDATE, flip the
 # symlink, restart, and roll back if the box does not come up.
 #
 # The migrate runs BEFORE the flip so a migration failure leaves `current`
-# untouched, and it runs from the candidate with TAU_ROOT pinned to it — never
+# untouched, and it runs from the candidate with FICUS_ROOT pinned to it — never
 # inherited, which would point the runner at the OLD `current` tree. The
 # candidate carries no .env of its own (secrets live at <dest>/.env, outside
 # the releases), so the DB env is sourced explicitly and only for that step —
 # the #937 failure class, where a runner that had always been started from a
 # directory containing .env silently lost its database URL.
 #
-# Emits TAU_RELEASE_ROLLED_BACK=0|1 on stdout. Returns non-zero if the release
+# Emits FICUS_RELEASE_ROLLED_BACK=0|1 on stdout. Returns non-zero if the release
 # did not end up serving, whether or not the rollback itself succeeded.
 artifact_activate() { # DEST RELEASE_DIR CORE_PORT
   local dest=$1 release_dir=$2 core_port=$3 cur_before prev_before attempt
@@ -3138,7 +3138,7 @@ artifact_activate() { # DEST RELEASE_DIR CORE_PORT
 
   # --- 1. migrate from the candidate (forward-only, same retry as git mode) --
   for attempt in 1 2 3; do
-    if env TAU_ROOT="${release_dir}" TAU_MIGRATE_LIVE=1 \
+    if env FICUS_ROOT="${release_dir}" FICUS_MIGRATE_LIVE=1 \
       bash -c "${_ARTIFACT_MIGRATE_PROGRAM}" tau-migrate "${dest}/.env" "${release_dir}"; then
       log_info "migrations complete (candidate ${release_dir})"
       break
@@ -3171,7 +3171,7 @@ artifact_activate() { # DEST RELEASE_DIR CORE_PORT
   # In a SUBSHELL: restart_core_services die()s on an unhealthy box, and a die
   # in this shell would take the rollback with it.
   if (restart_core_services "${core_port}"); then
-    printf 'TAU_RELEASE_ROLLED_BACK=0\n'
+    printf 'FICUS_RELEASE_ROLLED_BACK=0\n'
     return 0
   fi
 
@@ -3182,7 +3182,7 @@ artifact_activate() { # DEST RELEASE_DIR CORE_PORT
   # rollback that never happened.
   if [[ -z ${cur_before} || ${cur_before} == "${release_dir}" ]]; then
     log_error "no earlier release to roll back to — ${dest}/current still points at the failed release"
-    printf 'TAU_RELEASE_ROLLED_BACK=0\n'
+    printf 'FICUS_RELEASE_ROLLED_BACK=0\n'
     return 1
   fi
   log_error "rolling back: current -> $(basename "${cur_before}")"
@@ -3198,7 +3198,7 @@ artifact_activate() { # DEST RELEASE_DIR CORE_PORT
   # Best effort — but a failed rollback restart must NOT turn into a zero exit.
   (restart_core_services "${core_port}") ||
     log_error "the rollback restart ALSO failed — this box needs an operator"
-  printf 'TAU_RELEASE_ROLLED_BACK=1\n'
+  printf 'FICUS_RELEASE_ROLLED_BACK=1\n'
   return 1
 }
 
@@ -3241,13 +3241,13 @@ artifact_retention() { # DEST
 # directory and NOTHING else — not the platform checkout, not the env file,
 # not the TLS key, not the Caddyfile.
 
-# Candidate rrsync locations, plus a TAU_SETUP_RRSYNC override for hosts where
+# Candidate rrsync locations, plus a FICUS_SETUP_RRSYNC override for hosts where
 # it lives somewhere else. rrsync ships with rsync but has moved between
 # releases and is not on PATH on Ubuntu 24.04. Prints the path, or nothing
 # when it cannot be found.
 detect_rrsync() {
-  if [[ -n ${TAU_SETUP_RRSYNC:-} ]]; then
-    printf '%s' "${TAU_SETUP_RRSYNC}"
+  if [[ -n ${FICUS_SETUP_RRSYNC:-} ]]; then
+    printf '%s' "${FICUS_SETUP_RRSYNC}"
     return 0
   fi
   local c
@@ -3334,7 +3334,7 @@ wizard_write_config() { # OUT_FILE
   prompt_value "database (container = local ParadeDB in docker | external) [container]" db_mode
   db_mode=${db_mode:-container}
   if [[ ${db_mode} == external ]]; then
-    log_info "external DSN: prefer supplying it via TAU_SETUP_DATABASE_DSN at run time"
+    log_info "external DSN: prefer supplying it via FICUS_SETUP_DATABASE_DSN at run time"
     prompt_value "postgres DSN (blank to supply via env)" db_dsn
   elif [[ ${db_mode} != container ]]; then
     die "database mode must be container or external"
@@ -3342,7 +3342,7 @@ wizard_write_config() { # OUT_FILE
 
   local sandbox='' exe_key='' exe_image='ghcr.io/ficushq/ficus-machine:latest'
   # The sandbox runtime has NO default: the core refuses to start without an
-  # explicit TAU_SANDBOX_RUNTIME, so the wizard must make the operator choose.
+  # explicit FICUS_SANDBOX_RUNTIME, so the wizard must make the operator choose.
   # Bounded retries — an EOF on stdin returns an empty answer forever, and an
   # unbounded loop would spin instead of failing.
   local sandbox_try

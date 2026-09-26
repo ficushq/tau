@@ -471,9 +471,9 @@ describe('build-core-artifact.sh', () => {
     // localhost, so a build that somehow reaches the DB fails fast instead of
     // hanging on an unroutable host.
     expect(script).toContain('postgres://build:build@localhost:5432/build')
-    expect(script).toContain('unset TAU_TEST_MODE')
-    expect(script).toContain('unset TAU_ROOT')
-    expect(script).toContain('unset TAU_REPO_ROOT')
+    expect(script).toContain('unset FICUS_TEST_MODE')
+    expect(script).toContain('unset FICUS_ROOT')
+    expect(script).toContain('unset FICUS_REPO_ROOT')
   })
 
   it('installs reproducibly and prebuilds the machine bundles as a subprocess', async () => {

@@ -32,7 +32,7 @@
 # rebuilds, re-migrates and restarts. Requires root or passwordless-ish sudo.
 #
 # TWO MODES. The one above (git) is the escape hatch. When the four
-# TAU_ARTIFACT_* inputs arrive in the environment (delivered through the
+# FICUS_ARTIFACT_* inputs arrive in the environment (delivered through the
 # control plane's existing 0600 secrets.env channel — presigned URLs are
 # credentials and never travel in argv), this runs the ARTIFACT flow instead:
 # download a prebuilt, signed core release, verify it, migrate from the
@@ -65,8 +65,8 @@ Private-repo source.mode=git-https needs $GH_TOKEN in the environment (same as
 setup-host.sh); nothing is ever passed on the command line.
 
 Artifact mode is selected by the environment, not by a flag: when ALL of
-$TAU_ARTIFACT_TARBALL_URL, $TAU_ARTIFACT_MANIFEST_URL, $TAU_ARTIFACT_SIG_URL
-and $TAU_ARTIFACT_PUBKEY_B64 are set, the host is moved to that prebuilt
+$FICUS_ARTIFACT_TARBALL_URL, $FICUS_ARTIFACT_MANIFEST_URL, $FICUS_ARTIFACT_SIG_URL
+and $FICUS_ARTIFACT_PUBKEY_B64 are set, the host is moved to that prebuilt
 release instead of being rebuilt from source (--ref is then ignored: the
 artifact names its own commit). Any missing input = git mode.
 EOF
@@ -109,23 +109,23 @@ cfg_load "${CONFIG}"
 # bug, and running a half-configured artifact upgrade would either fail deep
 # inside the verify or, worse, silently fall back to building from source when
 # the control plane believed it shipped a verified release.
-TAU_ARTIFACT_TARBALL_URL=${TAU_ARTIFACT_TARBALL_URL:-}
-TAU_ARTIFACT_MANIFEST_URL=${TAU_ARTIFACT_MANIFEST_URL:-}
-TAU_ARTIFACT_SIG_URL=${TAU_ARTIFACT_SIG_URL:-}
-TAU_ARTIFACT_PUBKEY_B64=${TAU_ARTIFACT_PUBKEY_B64:-}
+FICUS_ARTIFACT_TARBALL_URL=${FICUS_ARTIFACT_TARBALL_URL:-}
+FICUS_ARTIFACT_MANIFEST_URL=${FICUS_ARTIFACT_MANIFEST_URL:-}
+FICUS_ARTIFACT_SIG_URL=${FICUS_ARTIFACT_SIG_URL:-}
+FICUS_ARTIFACT_PUBKEY_B64=${FICUS_ARTIFACT_PUBKEY_B64:-}
 ARTIFACT_MODE=0
-if [[ -n ${TAU_ARTIFACT_TARBALL_URL} && -n ${TAU_ARTIFACT_MANIFEST_URL} && -n ${TAU_ARTIFACT_SIG_URL} && -n ${TAU_ARTIFACT_PUBKEY_B64} ]]; then
+if [[ -n ${FICUS_ARTIFACT_TARBALL_URL} && -n ${FICUS_ARTIFACT_MANIFEST_URL} && -n ${FICUS_ARTIFACT_SIG_URL} && -n ${FICUS_ARTIFACT_PUBKEY_B64} ]]; then
   ARTIFACT_MODE=1
-elif [[ -n ${TAU_ARTIFACT_TARBALL_URL}${TAU_ARTIFACT_MANIFEST_URL}${TAU_ARTIFACT_SIG_URL}${TAU_ARTIFACT_PUBKEY_B64} ]]; then
+elif [[ -n ${FICUS_ARTIFACT_TARBALL_URL}${FICUS_ARTIFACT_MANIFEST_URL}${FICUS_ARTIFACT_SIG_URL}${FICUS_ARTIFACT_PUBKEY_B64} ]]; then
   # SOME but not all: a delivery bug. Falling through to git mode here would
   # rebuild from source while the control plane believes it shipped a verified
   # artifact — a silent divergence between what the fleet runs and what the CP
   # records. Fail loudly instead.
-  die "artifact inputs are incomplete — refusing to fall back to a source build (need TAU_ARTIFACT_TARBALL_URL, TAU_ARTIFACT_MANIFEST_URL, TAU_ARTIFACT_SIG_URL and TAU_ARTIFACT_PUBKEY_B64; missing:$(
-    [[ -z ${TAU_ARTIFACT_TARBALL_URL} ]] && printf ' TAU_ARTIFACT_TARBALL_URL'
-    [[ -z ${TAU_ARTIFACT_MANIFEST_URL} ]] && printf ' TAU_ARTIFACT_MANIFEST_URL'
-    [[ -z ${TAU_ARTIFACT_SIG_URL} ]] && printf ' TAU_ARTIFACT_SIG_URL'
-    [[ -z ${TAU_ARTIFACT_PUBKEY_B64} ]] && printf ' TAU_ARTIFACT_PUBKEY_B64'
+  die "artifact inputs are incomplete — refusing to fall back to a source build (need FICUS_ARTIFACT_TARBALL_URL, FICUS_ARTIFACT_MANIFEST_URL, FICUS_ARTIFACT_SIG_URL and FICUS_ARTIFACT_PUBKEY_B64; missing:$(
+    [[ -z ${FICUS_ARTIFACT_TARBALL_URL} ]] && printf ' FICUS_ARTIFACT_TARBALL_URL'
+    [[ -z ${FICUS_ARTIFACT_MANIFEST_URL} ]] && printf ' FICUS_ARTIFACT_MANIFEST_URL'
+    [[ -z ${FICUS_ARTIFACT_SIG_URL} ]] && printf ' FICUS_ARTIFACT_SIG_URL'
+    [[ -z ${FICUS_ARTIFACT_PUBKEY_B64} ]] && printf ' FICUS_ARTIFACT_PUBKEY_B64'
     true
   ))"
 fi
@@ -145,7 +145,7 @@ if [[ ${ARTIFACT_MODE} -eq 0 ]]; then
   SRC_DEPLOY_KEY=$(expand_tilde "$(cfg_get '.source.deploy_key_path')")
   case "${SRC_MODE}" in
     git-ssh | git-https) ;;
-    artifact) die "source.mode=artifact hosts are not upgradable from source (there is no checkout to move) — an artifact upgrade needs the TAU_ARTIFACT_* inputs in the environment" ;;
+    artifact) die "source.mode=artifact hosts are not upgradable from source (there is no checkout to move) — an artifact upgrade needs the FICUS_ARTIFACT_* inputs in the environment" ;;
     *) die "config: source.mode must be git-ssh or git-https (got '${SRC_MODE}')" ;;
   esac
 fi
@@ -202,7 +202,7 @@ artifact_upgrade() {
   ensure_system_bun_node "${RUN_USER}" "$(command -v bun)"
   # The services this run will restart read <dest>/.env (EnvironmentFile in
   # both units), and an upgrade rewrites no .env — so if that file never named
-  # a TAU_SANDBOX_RUNTIME, the flip at step 5 brings both units back DEAD.
+  # a FICUS_SANDBOX_RUNTIME, the flip at step 5 brings both units back DEAD.
   # Refuse here, while nothing on the box has moved.
   require_env_file_sandbox_runtime "${SRC_DEST}/.env"
 
@@ -212,9 +212,9 @@ artifact_upgrade() {
   ARTIFACT_PUBKEY_FILE=$(mktemp)
   chmod 600 "${ARTIFACT_PUBKEY_FILE}"
   trap 'rm -f "${ARTIFACT_PUBKEY_FILE}"' EXIT
-  printf '%s' "${TAU_ARTIFACT_PUBKEY_B64}" | base64 -d >"${ARTIFACT_PUBKEY_FILE}" 2>/dev/null ||
-    die "TAU_ARTIFACT_PUBKEY_B64 is not valid base64"
-  [[ -s ${ARTIFACT_PUBKEY_FILE} ]] || die "TAU_ARTIFACT_PUBKEY_B64 decoded to an empty public key"
+  printf '%s' "${FICUS_ARTIFACT_PUBKEY_B64}" | base64 -d >"${ARTIFACT_PUBKEY_FILE}" 2>/dev/null ||
+    die "FICUS_ARTIFACT_PUBKEY_B64 is not valid base64"
+  [[ -s ${ARTIFACT_PUBKEY_FILE} ]] || die "FICUS_ARTIFACT_PUBKEY_B64 decoded to an empty public key"
 
   # Read what this box is serving BEFORE anything on disk moves — after the
   # conversion below there is no checkout left to ask.
@@ -248,9 +248,9 @@ artifact_upgrade() {
   # be taken from the substitution. `local x=$(...)` would throw the status
   # away and read a failed, unverified acquire as success.
   acq='' rc=0
-  acq=$(artifact_acquire "${SRC_DEST}" "${TAU_ARTIFACT_TARBALL_URL}" "${TAU_ARTIFACT_MANIFEST_URL}" "${TAU_ARTIFACT_SIG_URL}" "${ARTIFACT_PUBKEY_FILE}") || rc=$?
+  acq=$(artifact_acquire "${SRC_DEST}" "${FICUS_ARTIFACT_TARBALL_URL}" "${FICUS_ARTIFACT_MANIFEST_URL}" "${FICUS_ARTIFACT_SIG_URL}" "${ARTIFACT_PUBKEY_FILE}") || rc=$?
   if [[ ${rc} -ne 0 ]]; then
-    # The TAU_ARTIFACT_ERROR=<token> line went into ${acq}, not onto the log
+    # The FICUS_ARTIFACT_ERROR=<token> line went into ${acq}, not onto the log
     # stream — re-emit it or the control plane never learns why this failed.
     printf '%s\n' "${acq}"
     die "artifact acquisition failed"
@@ -276,7 +276,7 @@ artifact_upgrade() {
 
   log_step 'artifact upgrade 5/5: migrate → flip → restart (auto-rollback on a failed health check)'
   # No `||` and no `if`: a failed activation must abort this script through
-  # set -e. artifact_activate emits TAU_RELEASE_ROLLED_BACK itself — it is the
+  # set -e. artifact_activate emits FICUS_RELEASE_ROLLED_BACK itself — it is the
   # only code that knows whether the flip survived.
   artifact_activate "${SRC_DEST}" "${release_dir}" "${CORE_PORT}"
   artifact_retention "${SRC_DEST}"
@@ -284,15 +284,15 @@ artifact_upgrade() {
   log_info "activated release ${sha:0:12}-${digest12} (was ${before})"
 
   # Machine-readable trailer, last lines on stdout (all logging goes to
-  # stderr). The TAU_UPGRADE_* lines are kept in artifact mode too so anything
+  # stderr). The FICUS_UPGRADE_* lines are kept in artifact mode too so anything
   # still grepping them keeps working: AFTER_SHA is the artifact's commit, and
   # AFTER_REF is 'artifact' because there is no branch to report.
   before_sha=${before#git-}
   before_sha=${before_sha%-*}
   artifact_emit_release_trailer "${before}" "${sha}-${digest12}"
-  printf 'TAU_UPGRADE_BEFORE_SHA=%s\n' "${before_sha}"
-  printf 'TAU_UPGRADE_AFTER_SHA=%s\n' "${sha}"
-  printf 'TAU_UPGRADE_AFTER_REF=%s\n' 'artifact'
+  printf 'FICUS_UPGRADE_BEFORE_SHA=%s\n' "${before_sha}"
+  printf 'FICUS_UPGRADE_AFTER_SHA=%s\n' "${sha}"
+  printf 'FICUS_UPGRADE_AFTER_REF=%s\n' 'artifact'
 }
 
 if [[ ${ARTIFACT_MODE} -eq 1 ]]; then
@@ -317,7 +317,7 @@ ensure_swapfile
 ensure_system_bun_node "${RUN_USER}" "$(command -v bun)"
 # Same reasoning as artifact mode's preflight: phase 4 restarts tau-api and
 # tau-worker against <dest>/.env, which this script never rewrites. An .env
-# with no (or a retired) TAU_SANDBOX_RUNTIME means both units come back dead
+# with no (or a retired) FICUS_SANDBOX_RUNTIME means both units come back dead
 # AFTER the checkout has already moved — so check before phase 1.
 require_env_file_sandbox_runtime "${SRC_DEST}/.env"
 
@@ -333,7 +333,7 @@ log_step "phase 3/4: database migrations"
 run_db_migrations "${SRC_DEST}"
 
 ensure_tau_api_memory_guardrail
-if [[ ${TAU_API_MEMORY_GUARDRAIL_CHANGED} -eq 1 ]]; then
+if [[ ${FICUS_API_MEMORY_GUARDRAIL_CHANGED} -eq 1 ]]; then
   as_root systemctl daemon-reload
 fi
 
@@ -351,6 +351,6 @@ log_info "$(upgrade_result_message "${BEFORE_SHA}" "${AFTER_SHA}" "${_tau_build_
 
 # Machine-readable trailer, last lines on stdout (all logging goes to stderr).
 # The control plane parses these; humans get the log_info lines above.
-printf 'TAU_UPGRADE_BEFORE_SHA=%s\n' "${BEFORE_SHA}"
-printf 'TAU_UPGRADE_AFTER_SHA=%s\n' "${AFTER_SHA}"
-printf 'TAU_UPGRADE_AFTER_REF=%s\n' "${AFTER_REF}"
+printf 'FICUS_UPGRADE_BEFORE_SHA=%s\n' "${BEFORE_SHA}"
+printf 'FICUS_UPGRADE_AFTER_SHA=%s\n' "${AFTER_SHA}"
+printf 'FICUS_UPGRADE_AFTER_REF=%s\n' "${AFTER_REF}"

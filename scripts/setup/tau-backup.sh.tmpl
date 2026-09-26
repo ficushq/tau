@@ -4,7 +4,7 @@
 #
 # Nightly encrypted backup: pg_dump the tau database, tar it together with
 # HOME_DIR (the agent workspace/memory tree) and <dest>/.env (which carries
-# TAU_ENCRYPTION_KEY — the design requires the key travel INSIDE the backup
+# FICUS_ENCRYPTION_KEY — the design requires the key travel INSIDE the backup
 # envelope, never in the platform's tenant registry), encrypt the tarball
 # with a passphrase, and upload it to S3-compatible storage. Prunes local
 # temp files and enforces a 14-object retention window under the configured
@@ -16,23 +16,23 @@
 # Exits non-zero on ANY failure so systemd flags the unit as failed.
 #
 # Test seams (env vars):
-#   TAU_BACKUP_DRY_RUN=1          stop after encryption, before upload AND
+#   FICUS_BACKUP_DRY_RUN=1          stop after encryption, before upload AND
 #                                  retention — the encrypted artifact is left
-#                                  on disk under TAU_BACKUP_WORKDIR (or the
+#                                  on disk under FICUS_BACKUP_WORKDIR (or the
 #                                  script's own mktemp dir) for inspection.
 #                                  This is the ONLY case where WORKDIR survives
 #                                  the script's exit.
-#   TAU_BACKUP_PG_DUMP_CMD=<cmd>  replaces the real pg_dump invocation; <cmd>
-#                                  is run as `"$TAU_BACKUP_PG_DUMP_CMD" <output
+#   FICUS_BACKUP_PG_DUMP_CMD=<cmd>  replaces the real pg_dump invocation; <cmd>
+#                                  is run as `"$FICUS_BACKUP_PG_DUMP_CMD" <output
 #                                  file path>` and must write a dump to that
 #                                  path — lets tests exercise tar/encrypt/
 #                                  decrypt/untar without a live postgres.
-#   TAU_BACKUP_WORKDIR=<dir>      use this directory for staging instead of a
+#   FICUS_BACKUP_WORKDIR=<dir>      use this directory for staging instead of a
 #                                  fresh mktemp dir. The cleanup trap removes
 #                                  it (and everything in it — the unencrypted
 #                                  intermediates AND the encrypted artifact) on
 #                                  every exit path — success, `die`, or signal
-#                                  — except under TAU_BACKUP_DRY_RUN=1. Without
+#                                  — except under FICUS_BACKUP_DRY_RUN=1. Without
 #                                  this, a failed upload under the nightly
 #                                  timer (which always uses a fresh mktemp dir)
 #                                  would leak an encrypted tarball into /tmp on
@@ -61,7 +61,7 @@ die() {
 [[ -f ${BACKUP_ENV_FILE} ]] || die "${BACKUP_ENV_FILE} not found — was phase_backup run?"
 # shellcheck disable=SC1090
 source "${BACKUP_ENV_FILE}"
-[[ -n ${TAU_BACKUP_PASSPHRASE:-} ]] || die "${BACKUP_ENV_FILE} did not set TAU_BACKUP_PASSPHRASE"
+[[ -n ${FICUS_BACKUP_PASSPHRASE:-} ]] || die "${BACKUP_ENV_FILE} did not set FICUS_BACKUP_PASSPHRASE"
 
 # curl config-file credentials, never argv (ps-visible) — same convention as
 # lib.sh's _api_curl_auth_config. Escapes \ and " for the curl config quoted
@@ -73,7 +73,7 @@ _s3_curl_user_config() { # ACCESS SECRET
   printf 'user = "%s:%s"\n' "${a}" "${s}"
 }
 
-WORKDIR=${TAU_BACKUP_WORKDIR:-}
+WORKDIR=${FICUS_BACKUP_WORKDIR:-}
 if [[ -z ${WORKDIR} ]]; then
   WORKDIR=$(mktemp -d -t tau-backup.XXXXXX)
 fi
@@ -81,7 +81,7 @@ mkdir -p "${WORKDIR}"
 chmod 700 "${WORKDIR}"
 
 PASSFILE=$(mktemp)
-# KEEP_ARTIFACT is set only on the TAU_BACKUP_DRY_RUN success path, right
+# KEEP_ARTIFACT is set only on the FICUS_BACKUP_DRY_RUN success path, right
 # before its `exit 0` — that is the sole case where WORKDIR (and the
 # encrypted artifact under it) must survive. Every other exit — success,
 # `die`, or an unhandled signal — removes WORKDIR entirely, so a failed
@@ -94,7 +94,7 @@ cleanup() {
   rm -rf "${WORKDIR}"
 }
 trap cleanup EXIT
-printf '%s' "${TAU_BACKUP_PASSPHRASE}" >"${PASSFILE}"
+printf '%s' "${FICUS_BACKUP_PASSPHRASE}" >"${PASSFILE}"
 chmod 600 "${PASSFILE}"
 
 DATE=$(date -u '+%Y-%m-%d')
@@ -104,8 +104,8 @@ ENC_FILE="${WORKDIR}/${DATE}.tar.gz.enc"
 
 # ---------------------------------------------------------------- pg_dump
 log_info "dumping database (mode=${DB_MODE})"
-if [[ -n ${TAU_BACKUP_PG_DUMP_CMD:-} ]]; then
-  "${TAU_BACKUP_PG_DUMP_CMD}" "${DUMP_FILE}" || die "test pg-dump seam (\$TAU_BACKUP_PG_DUMP_CMD) failed"
+if [[ -n ${FICUS_BACKUP_PG_DUMP_CMD:-} ]]; then
+  "${FICUS_BACKUP_PG_DUMP_CMD}" "${DUMP_FILE}" || die "test pg-dump seam (\$FICUS_BACKUP_PG_DUMP_CMD) failed"
 elif [[ ${DB_MODE} == container ]]; then
   docker exec "${DB_CONTAINER}" pg_dump -U postgres -Fc tau >"${DUMP_FILE}" ||
     die "pg_dump via 'docker exec ${DB_CONTAINER}' failed"
@@ -138,30 +138,30 @@ openssl enc -aes-256-cbc -pbkdf2 -salt -pass "file:${PASSFILE}" -in "${TAR_FILE}
 # it here shrinks the exposure/disk-usage window).
 rm -f "${TAR_FILE}" "${DUMP_FILE}"
 
-if [[ ${TAU_BACKUP_DRY_RUN:-0} == 1 ]]; then
+if [[ ${FICUS_BACKUP_DRY_RUN:-0} == 1 ]]; then
   KEEP_ARTIFACT=1
-  log_info "TAU_BACKUP_DRY_RUN=1 — stopping before upload/retention; encrypted artifact left at ${ENC_FILE}"
+  log_info "FICUS_BACKUP_DRY_RUN=1 — stopping before upload/retention; encrypted artifact left at ${ENC_FILE}"
   exit 0
 fi
 
 # -------------------------------------------------------------------- upload
-[[ -n ${TAU_BACKUP_S3_ACCESS_KEY:-} ]] || die "${BACKUP_ENV_FILE} did not set TAU_BACKUP_S3_ACCESS_KEY"
-[[ -n ${TAU_BACKUP_S3_SECRET_KEY:-} ]] || die "${BACKUP_ENV_FILE} did not set TAU_BACKUP_S3_SECRET_KEY"
+[[ -n ${FICUS_BACKUP_S3_ACCESS_KEY:-} ]] || die "${BACKUP_ENV_FILE} did not set FICUS_BACKUP_S3_ACCESS_KEY"
+[[ -n ${FICUS_BACKUP_S3_SECRET_KEY:-} ]] || die "${BACKUP_ENV_FILE} did not set FICUS_BACKUP_S3_SECRET_KEY"
 [[ -n ${S3_ENDPOINT} && -n ${S3_REGION} && -n ${S3_BUCKET} ]] || die "backup S3 endpoint/region/bucket not rendered — was phase_backup run with a complete backup.* config?"
 
 UPLOAD_HEADERS=()
-if [[ -n ${TAU_TERMINATION_BACKUP_EFFECT_ID:-} ]]; then
-  [[ ${TAU_TERMINATION_BACKUP_EFFECT_ID} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
-    die "TAU_TERMINATION_BACKUP_EFFECT_ID must be a canonical UUID"
-  OBJECT_KEY="${S3_PREFIX:+${S3_PREFIX%/}/}terminations/${TAU_TERMINATION_BACKUP_EFFECT_ID}.tar.gz.enc"
-  UPLOAD_HEADERS=(-H "x-amz-meta-tau-termination-backup-effect-id:${TAU_TERMINATION_BACKUP_EFFECT_ID}")
+if [[ -n ${FICUS_TERMINATION_BACKUP_EFFECT_ID:-} ]]; then
+  [[ ${FICUS_TERMINATION_BACKUP_EFFECT_ID} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    die "FICUS_TERMINATION_BACKUP_EFFECT_ID must be a canonical UUID"
+  OBJECT_KEY="${S3_PREFIX:+${S3_PREFIX%/}/}terminations/${FICUS_TERMINATION_BACKUP_EFFECT_ID}.tar.gz.enc"
+  UPLOAD_HEADERS=(-H "x-amz-meta-tau-termination-backup-effect-id:${FICUS_TERMINATION_BACKUP_EFFECT_ID}")
 else
   OBJECT_KEY="${S3_PREFIX:+${S3_PREFIX%/}/}${DATE}.tar.gz.enc"
 fi
 UPLOAD_URL="${S3_ENDPOINT%/}/${S3_BUCKET}/${OBJECT_KEY}"
 log_info "uploading to ${OBJECT_KEY}"
 curl -fsS --aws-sigv4 "aws:amz:${S3_REGION}:s3" \
-  --config <(_s3_curl_user_config "${TAU_BACKUP_S3_ACCESS_KEY}" "${TAU_BACKUP_S3_SECRET_KEY}") \
+  --config <(_s3_curl_user_config "${FICUS_BACKUP_S3_ACCESS_KEY}" "${FICUS_BACKUP_S3_SECRET_KEY}") \
   "${UPLOAD_HEADERS[@]}" -X PUT --upload-file "${ENC_FILE}" "${UPLOAD_URL}" ||
   die "upload to S3 failed (endpoint=${S3_ENDPOINT} bucket=${S3_BUCKET} key=${OBJECT_KEY})"
 log_info "upload complete"
@@ -179,7 +179,7 @@ KEY_PREFIX="${S3_PREFIX:+${S3_PREFIX%/}/}"
 KEY_SHAPE_RE="^$(printf '%s' "${KEY_PREFIX}" | sed -e 's/[.[\*^$(){}+?|]/\\&/g')[0-9]{4}-[0-9]{2}-[0-9]{2}\.tar\.gz\.enc\$"
 LIST_URL="${S3_ENDPOINT%/}/${S3_BUCKET}?list-type=2&prefix=${KEY_PREFIX}"
 list_body=$(curl -fsS --aws-sigv4 "aws:amz:${S3_REGION}:s3" \
-  --config <(_s3_curl_user_config "${TAU_BACKUP_S3_ACCESS_KEY}" "${TAU_BACKUP_S3_SECRET_KEY}") \
+  --config <(_s3_curl_user_config "${FICUS_BACKUP_S3_ACCESS_KEY}" "${FICUS_BACKUP_S3_SECRET_KEY}") \
   "${LIST_URL}") || die "listing S3 objects for retention (prefix ${S3_PREFIX}) failed"
 keys=$(printf '%s' "${list_body}" | grep -oE '<Key>[^<]*</Key>' | sed -e 's#<Key>##' -e 's#</Key>##' | grep -E "${KEY_SHAPE_RE}") || true
 total=$(printf '%s\n' "${keys}" | grep -c . || true)
@@ -192,7 +192,7 @@ if [[ ${total} -gt 14 ]]; then
     # that skipped the filter above.
     [[ ${key} =~ ${KEY_SHAPE_RE} ]] || die "retention: refusing to delete a key that doesn't match this backup's <prefix>/<YYYY-MM-DD>.tar.gz.enc shape: ${key}"
     curl -fsS --aws-sigv4 "aws:amz:${S3_REGION}:s3" \
-      --config <(_s3_curl_user_config "${TAU_BACKUP_S3_ACCESS_KEY}" "${TAU_BACKUP_S3_SECRET_KEY}") \
+      --config <(_s3_curl_user_config "${FICUS_BACKUP_S3_ACCESS_KEY}" "${FICUS_BACKUP_S3_SECRET_KEY}") \
       -X DELETE "${S3_ENDPOINT%/}/${S3_BUCKET}/${key}" ||
       die "failed to delete old backup object during retention: ${key}"
     log_info "retention: deleted ${key}"

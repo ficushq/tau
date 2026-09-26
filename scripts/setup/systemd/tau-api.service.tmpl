@@ -21,10 +21,10 @@ EnvironmentFile=-/etc/tau/managed.env
 # The tree core reads config, migrations and the web dist from: the ACTIVE
 # release (<dest>/current) in artifact mode, the checkout in git mode. Note
 # systemd applies EnvironmentFile= AFTER Environment= regardless of the order
-# these lines appear in, so a TAU_ROOT in <dest>/.env would override this one
+# these lines appear in, so a FICUS_ROOT in <dest>/.env would override this one
 # and detach the running code from its own tree — setup-host.sh refuses a
-# TAU_ROOT coming through core.env for exactly that reason.
-Environment=TAU_ROOT=@RUN_ROOT@
+# FICUS_ROOT coming through core.env for exactly that reason.
+Environment=FICUS_ROOT=@RUN_ROOT@
 Environment=PATH=@BUN_DIR@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=@BUN_BIN@ run dist/index.js
 MemoryAccounting=yes

@@ -15,10 +15,10 @@
 #
 #   1. back up the on-VM yaml and Core .env
 #   2. rewrite core.origin, ingress.tls_{cert,key}_path, and (optionally)
-#      dns.zone / core.env.TAU_PLATFORM_INGEST_URL in the yaml
+#      dns.zone / core.env.FICUS_PLATFORM_INGEST_URL in the yaml
 #   3. back up, then install, the pushed cert pair to the canonical Caddy
 #      TLS paths
-#   4. rewrite APP_URL / TAU_WEB_ORIGIN (and TAU_PLATFORM_INGEST_URL, if
+#   4. rewrite APP_URL / FICUS_WEB_ORIGIN (and FICUS_PLATFORM_INGEST_URL, if
 #      given) in <dest>/.env, preserving every other line
 #   5. re-render + reload the Caddyfile for the new host
 #   6. restart tau-api/tau-worker and wait for the API to come back healthy
@@ -84,8 +84,8 @@ Options:
   --tls-cert PATH   the new origin certificate (already pushed to this VM)
   --tls-key PATH    the new origin certificate's private key
   --dns-zone DOMAIN optional: rewrite dns.zone to this value
-  --ingest-url URL  optional: rewrite core.env.TAU_PLATFORM_INGEST_URL (and
-                     the running .env's TAU_PLATFORM_INGEST_URL) to this value
+  --ingest-url URL  optional: rewrite core.env.FICUS_PLATFORM_INGEST_URL (and
+                     the running .env's FICUS_PLATFORM_INGEST_URL) to this value
   --dry-run         print the planned yaml keys, .env keys, Caddy host and
                      units without changing anything
   -h, --help        show this help
@@ -161,7 +161,7 @@ done
 # (^https://[^/[:space:]]+$) rejected a path but let anything else through
 # a hostname's position — an origin like https://evil@acme.ficus.sh or
 # https://acme.ficus.sh?x=1 would have passed it and then landed, verbatim,
-# in core.origin/APP_URL/TAU_WEB_ORIGIN and the rendered Caddyfile.
+# in core.origin/APP_URL/FICUS_WEB_ORIGIN and the rendered Caddyfile.
 CADDY_HOSTNAME_RE='^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
 [[ ${ORIGIN} =~ ^https://(${CADDY_HOSTNAME_RE#^})$ ]] ||
   die "--origin must be a bare https origin https://<hostname> — no userinfo, port, path, query, or fragment (got '${ORIGIN}')"
@@ -228,11 +228,11 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
   plan "ingress.tls_cert_path: ${TLS_CERT}"
   plan "ingress.tls_key_path: ${TLS_KEY}"
   [[ -n ${DNS_ZONE} ]] && plan "dns.zone: ${DNS_ZONE}"
-  [[ -n ${INGEST_URL} ]] && plan "core.env.TAU_PLATFORM_INGEST_URL: ${INGEST_URL}"
+  [[ -n ${INGEST_URL} ]] && plan "core.env.FICUS_PLATFORM_INGEST_URL: ${INGEST_URL}"
   printf '\n.env — %s\n' "${ENV_FILE}"
   plan "APP_URL=${ORIGIN}"
-  plan "TAU_WEB_ORIGIN=${ORIGIN}"
-  [[ -n ${INGEST_URL} ]] && plan "TAU_PLATFORM_INGEST_URL=${INGEST_URL}"
+  plan "FICUS_WEB_ORIGIN=${ORIGIN}"
+  [[ -n ${INGEST_URL} ]] && plan "FICUS_PLATFORM_INGEST_URL=${INGEST_URL}"
   printf '\ncaddy — host %s\n' "${CADDY_HOST}"
   plan "install ${TLS_CERT} -> ${CADDY_TLS_CERT_PATH} (0644 root) and ${TLS_KEY} -> ${CADDY_TLS_KEY_PATH} (0600 caddy-owned; contents never printed)"
   plan "write ${CADDYFILE_PATH} (idempotent: rewrite + reload, never restart, only on content change):"
@@ -262,7 +262,7 @@ backup_file "${ENV_FILE}" >/dev/null
 # ======================================================== 2. rewrite yaml
 #
 # Touches ONLY core.origin, ingress.tls_{cert,key}_path, and (when given)
-# dns.zone / core.env.TAU_PLATFORM_INGEST_URL — never source.ref,
+# dns.zone / core.env.FICUS_PLATFORM_INGEST_URL — never source.ref,
 # artifacts.dir, or any secret.
 
 log_step "2/6: rewrite ${CONFIG}"
@@ -270,8 +270,8 @@ cfg_set '.core.origin' "${ORIGIN}"
 cfg_set '.ingress.tls_cert_path' "${TLS_CERT}"
 cfg_set '.ingress.tls_key_path' "${TLS_KEY}"
 [[ -n ${DNS_ZONE} ]] && cfg_set '.dns.zone' "${DNS_ZONE}"
-[[ -n ${INGEST_URL} ]] && cfg_set '.core.env.TAU_PLATFORM_INGEST_URL' "${INGEST_URL}"
-log_info "wrote core.origin=${ORIGIN} ingress.tls_cert_path=${TLS_CERT} ingress.tls_key_path=${TLS_KEY}${DNS_ZONE:+ dns.zone=${DNS_ZONE}}${INGEST_URL:+ core.env.TAU_PLATFORM_INGEST_URL=${INGEST_URL}}"
+[[ -n ${INGEST_URL} ]] && cfg_set '.core.env.FICUS_PLATFORM_INGEST_URL' "${INGEST_URL}"
+log_info "wrote core.origin=${ORIGIN} ingress.tls_cert_path=${TLS_CERT} ingress.tls_key_path=${TLS_KEY}${DNS_ZONE:+ dns.zone=${DNS_ZONE}}${INGEST_URL:+ core.env.FICUS_PLATFORM_INGEST_URL=${INGEST_URL}}"
 
 # ================================================ 3-5. cert, .env, caddy
 #
@@ -325,14 +325,14 @@ if ! (
   # ============================================================ 4. rewrite .env
   #
   # Preserves every other line byte-for-byte — this is a targeted patch, not
-  # a re-render: a re-render would need secrets (TAU_ENCRYPTION_KEY,
-  # TAU_PASSWORD, ...) that are deliberately unavailable off-box on a hosted
+  # a re-render: a re-render would need secrets (FICUS_ENCRYPTION_KEY,
+  # FICUS_PASSWORD, ...) that are deliberately unavailable off-box on a hosted
   # tenant.
   log_step "4/6: rewrite ${ENV_FILE}"
   envfile_set "${ENV_FILE}" APP_URL "${ORIGIN}"
-  envfile_set "${ENV_FILE}" TAU_WEB_ORIGIN "${ORIGIN}"
-  [[ -n ${INGEST_URL} ]] && envfile_set "${ENV_FILE}" TAU_PLATFORM_INGEST_URL "${INGEST_URL}"
-  log_info "wrote APP_URL=TAU_WEB_ORIGIN=${ORIGIN} to ${ENV_FILE}${INGEST_URL:+ (+ TAU_PLATFORM_INGEST_URL)}"
+  envfile_set "${ENV_FILE}" FICUS_WEB_ORIGIN "${ORIGIN}"
+  [[ -n ${INGEST_URL} ]] && envfile_set "${ENV_FILE}" FICUS_PLATFORM_INGEST_URL "${INGEST_URL}"
+  log_info "wrote APP_URL=FICUS_WEB_ORIGIN=${ORIGIN} to ${ENV_FILE}${INGEST_URL:+ (+ FICUS_PLATFORM_INGEST_URL)}"
 
   # ============================================================ 5. caddy
   log_step "5/6: re-render + reload caddy (host ${CADDY_HOST})"

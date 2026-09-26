@@ -40,15 +40,15 @@ setup_fixture() { # DIR
 run_prune() { # DIR [RETENTION_DAYS]
   local d=$1 keep=${2:-14}
   # shellcheck disable=SC2034
-  SUDO=() TAU_ARCHIVE_DIR="$d" TAU_ARCHIVE_RETENTION_DAYS="$keep" \
+  SUDO=() FICUS_ARCHIVE_DIR="$d" FICUS_ARCHIVE_RETENTION_DAYS="$keep" \
     bash -c "
       # No -u: bash 3.2 (macOS) treats \"\${SUDO[@]}\" on an EMPTY array as an
       # unbound variable, which the real script never hits because machine hosts
       # run bash 5. The function under test is what matters here, not the shell.
       set -eo pipefail
       SUDO=()
-      TAU_ARCHIVE_DIR='$d'
-      TAU_ARCHIVE_RETENTION_DAYS='$keep'
+      FICUS_ARCHIVE_DIR='$d'
+      FICUS_ARCHIVE_RETENTION_DAYS='$keep'
       $(extract_prune)
       prune_box_archives
     "

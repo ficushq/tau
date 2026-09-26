@@ -47,6 +47,6 @@ log_info "artifacts applied from ${STAGE_DIR}"
 # Machine-readable markers for the sync executor (stdout; logs go to stderr).
 # On exit 0 these three lines are ALWAYS present — the executor keys its
 # daemon-reload/restart decisions off them.
-echo "TAU_MANAGED_ENV_CHANGED=${ENV_CHANGED}"
-echo "TAU_MANAGED_ENV_DROPIN_CHANGED=${MANAGED_ENV_DROPIN_CHANGED}"
-echo "TAU_API_MEMORY_GUARDRAIL_CHANGED=${TAU_API_MEMORY_GUARDRAIL_CHANGED}"
+echo "FICUS_MANAGED_ENV_CHANGED=${ENV_CHANGED}"
+echo "FICUS_MANAGED_ENV_DROPIN_CHANGED=${MANAGED_ENV_DROPIN_CHANGED}"
+echo "FICUS_API_MEMORY_GUARDRAIL_CHANGED=${FICUS_API_MEMORY_GUARDRAIL_CHANGED}"
