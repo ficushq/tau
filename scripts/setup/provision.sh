@@ -281,11 +281,11 @@ FORWARD_ENVS+=('FICUS_SETUP_RESTORE_URL' 'FICUS_SETUP_RESTORE_PASSPHRASE' 'FICUS
 while IFS= read -r core_env_forward_name; do
   [[ -n ${core_env_forward_name} ]] && FORWARD_ENVS+=("${core_env_forward_name}")
 done <<<"${CORE_ENV_FORWARD_NAMES}"
-# One release (Ficus rename): forward each FICUS_ input's pre-rename TAU_
-# spelling as well — the push loop skips names that are unset here, and
-# setup-host.sh reads either spelling of its *_SETUP_* inputs.
+# One release (Ficus rename): forward each FICUS_SETUP_* input's pre-rename
+# TAU_ spelling as well — the push loop skips names that are unset here, and
+# setup-host.sh reads either spelling of those (and only those) inputs.
 for forward_name in "${FORWARD_ENVS[@]}"; do
-  if [[ ${forward_name} == FICUS_?* ]]; then
+  if [[ ${forward_name} == FICUS_SETUP_?* ]]; then
     FORWARD_ENVS+=("TAU_${forward_name#FICUS_}")
   fi
 done

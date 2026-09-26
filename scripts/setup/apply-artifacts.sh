@@ -80,6 +80,8 @@ if [[ -n ${CONFIG} ]]; then
   DB_MODE=$(cfg_get '.database.mode' 'container')
   # shellcheck disable=SC2034
   BUN_BIN=/usr/local/bin/bun
+  # One toolkit run at a time may rename, restore or reconcile this host.
+  env_prefix_lock
   reconcile_rc=0
   env_prefix_reconcile || reconcile_rc=$?
   if [[ ${reconcile_rc} -eq 3 ]]; then
@@ -91,11 +93,14 @@ if [[ -n ${CONFIG} ]]; then
     env_prefix_mismatch "an env rename is still journaled in $(env_rename_backup_root)/PENDING"
   fi
   HOST_PREFIX=$(host_env_prefix "${SRC_DEST}/.env")
-  ACTIVE_TREE=$(active_release_tree) || die "could not resolve the active release under ${SRC_DEST}"
-  RELEASE_PREFIX=$(core_release_env_prefix "${ACTIVE_TREE}") || die "could not tell which env prefix ${ACTIVE_TREE} reads"
-  # An unknown (NONE) .env prefix cannot disagree — the control plane's
-  # hostEnvAgrees makes the same call.
-  if [[ ${HOST_PREFIX} != NONE && ${HOST_PREFIX} != "${RELEASE_PREFIX}" ]]; then
+  # An unknown side (NONE) cannot disagree — the control plane's
+  # hostEnvAgrees makes the same call — so an active release whose prefix
+  # cannot be read is NONE here, not a failed sync.
+  if ! ACTIVE_TREE=$(active_release_tree) || ! RELEASE_PREFIX=$(core_release_env_prefix "${ACTIVE_TREE}" 2>/dev/null); then
+    log_warn "could not tell which env prefix the active release under ${SRC_DEST} reads — treating it as unknown"
+    RELEASE_PREFIX=NONE
+  fi
+  if [[ ${HOST_PREFIX} != NONE && ${RELEASE_PREFIX} != NONE && ${HOST_PREFIX} != "${RELEASE_PREFIX}" ]]; then
     env_prefix_mismatch "${SRC_DEST}/.env uses ${HOST_PREFIX}_* but the active release reads ${RELEASE_PREFIX}_*"
   fi
 fi

@@ -3307,7 +3307,7 @@ EOF
   # NO artifact inputs at all is plain git mode — which still refuses to run
   # against a dest that is not a checkout.
   uh_rc=0
-  uh_out=$(bash "${SCRIPT_DIR}/upgrade-host.sh" --config "${UH_TMP}/tau-setup.yaml" 2>&1) || uh_rc=$?
+  uh_out=$(ENV_RENAME_BACKUP_ROOT="${UH_TMP}/bk" bash "${SCRIPT_DIR}/upgrade-host.sh" --config "${UH_TMP}/tau-setup.yaml" 2>&1) || uh_rc=$?
   expect_eq 'upgrade-host: no artifact inputs = git mode' "${uh_rc}" '1'
   expect_match 'upgrade-host: git mode still requires a checkout at source.dest' \
     "${uh_out}" 'is not a git checkout — nothing to upgrade'
@@ -5477,6 +5477,9 @@ rm -rf "${BF_TMP}"
 # and the converted-host restore (N-I3). Legacy TAU_ fixture lines carry the
 # `legacy-env` marker so the codemod leaves them alone on a re-run.
 EPR=$(mktemp -d)
+# The invoking user's own group, so files created here (BSD takes the
+# directory's group) are ones an unprivileged run can keep as they are.
+chgrp "$(id -g)" "${EPR}" 2>/dev/null || true
 EPR_SAVED_AS_ROOT=$(declare -f as_root)
 EPR_SAVED_SYSTEMD_UNIT_DIR=${FICUS_SYSTEMD_UNIT_DIR}
 EPR_SAVED_MANAGED_ENV_PATH=${FICUS_MANAGED_ENV_PATH}
@@ -5508,7 +5511,7 @@ as_root() {
 }
 epr_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 # A core unit file under the scratch unit dir: epr_unit api|worker.
-epr_unit() { printf '%s/tau-%s.service' "${FICUS_SYSTEMD_UNIT_DIR}" "$1"; }
+epr_unit() { printf '%s/tau-%s.service' "${FICUS_SYSTEMD_UNIT_DIR}" "$1"; } # phase5-unit-name
 
 printf '# x\nTAU_A=1\nB=2\nexport TAU_C="x y"\nFICUS_D=4\nTAU_D=old\nTAU_MANAGED_SECRET_KEYS=TAU_P,Q\n' >"${EPR}/.env" # legacy-env
 chmod 0640 "${EPR}/.env"
@@ -5593,6 +5596,22 @@ expect_eq 'envfile_get_prefixed: FICUS_ wins over an identical TAU_' \
   "$(printf 'FICUS_PASSWORD=p\nTAU_PASSWORD=p\n' >"${EPR}/both.env"; envfile_get_prefixed "${EPR}/both.env" PASSWORD)" 'p' # legacy-env
 expect_eq 'envfile_get_prefixed: neither name returns 1' \
   "$( (envfile_get_prefixed "${EPR}/.env" NO_SUCH_SUFFIX) >/dev/null 2>&1; echo "rc=$?")" 'rc=1'
+# Presence is decided on what a dotenv reader sees (trimmed, one quote level
+# removed): an empty-looking FICUS_ value never hides a real TAU_ one.
+for epr_empty in '""' "''" ' ' '  ""  '; do
+  printf 'FICUS_ENCRYPTION_KEY=%s\nTAU_ENCRYPTION_KEY=realkey\n' "${epr_empty}" >"${EPR}/emptyish.env" # legacy-env
+  expect_eq "envfile_get_prefixed: FICUS_ENCRYPTION_KEY=${epr_empty} reads the real TAU_ key" \
+    "$(envfile_get_prefixed "${EPR}/emptyish.env" ENCRYPTION_KEY)" 'realkey'
+done
+printf 'FICUS_ENCRYPTION_KEY="quoted-key"\n' >"${EPR}/quoted.env"
+expect_eq 'envfile_get_prefixed: returns the value a dotenv reader sees (quotes removed)' \
+  "$(envfile_get_prefixed "${EPR}/quoted.env" ENCRYPTION_KEY)" 'quoted-key'
+# `export` and indented lines, and CRLF, are assignments too: a pre-rename
+# key written that way is never read as absent (no new key is generated).
+printf 'export TAU_ENCRYPTION_KEY=exported-key\n' >"${EPR}/export.env" # legacy-env
+expect_eq 'envfile_get_prefixed: sees an export TAU_ line' "$(envfile_get_prefixed "${EPR}/export.env" ENCRYPTION_KEY)" 'exported-key'
+printf '  TAU_PASSWORD=indented\r\n' >"${EPR}/indent.env" # legacy-env
+expect_eq 'envfile_get_prefixed: sees an indented CRLF line, without the CR' "$(envfile_get_prefixed "${EPR}/indent.env" PASSWORD)" 'indented'
 
 # Backup set + journal (N-C1).
 printf 'one\n' >"${EPR}/f1"
@@ -5729,7 +5748,7 @@ expect_eq 'env_prefix_reconcile (active FICUS): one set is left' \
 
 # migrate on a host whose .env is FICUS_ but managed.env is still TAU_: the v2
 # ".env already FICUS" shortcut would have skipped managed.env.
-epr_host half '{"name":"ficus"}'
+epr_host half '{"name":"tau"}'
 envfile_rename_prefix "${SRC_DEST}/.env" TAU FICUS >/dev/null 2>&1
 ENV_RENAME_PENDING=0
 migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel" 2>/dev/null
@@ -5742,7 +5761,8 @@ expect_eq 'migrate_env_prefix_host: creates exactly one set' \
 expect_eq 'migrate_env_prefix_host: leaves the rename pending for the caller to commit' \
   "${ENV_RENAME_PENDING}:$([[ -e ${ENV_RENAME_BACKUP_ROOT}/PENDING ]] && echo journaled)" '1:journaled'
 EPR_HALF_SET=${ENV_RENAME_BACKUP_SET}
-# The EXIT/TERM trap body restores it (once), leaving no journal.
+# The EXIT/TERM trap body restores it (once), leaving no journal: the active
+# release reads TAU_ (Ruling 29 — the files must match the active release).
 env_prefix_on_exit 143 2>/dev/null
 expect_eq 'env_prefix_on_exit: a failed exit restores the set byte for byte' "$(epr_matches_manifest "${EPR_HALF_SET}")" 'yes'
 expect_eq 'env_prefix_on_exit: ...clears the journal' "$([[ -e ${ENV_RENAME_BACKUP_ROOT}/PENDING ]] && echo left || echo gone)" 'gone'
@@ -5758,6 +5778,83 @@ expect_eq 'env_prefix_on_exit: rc 0 does not restore' "$(grep -c '^FICUS_' "${FI
 env_prefix_commit 2>/dev/null
 expect_eq 'env_prefix_commit: clears the flag and the journal' \
   "${ENV_RENAME_PENDING}:$([[ -e ${ENV_RENAME_BACKUP_ROOT}/PENDING ]] && echo left || echo gone)" '0:gone'
+
+# Ruling 29: a failure or signal AFTER the flip (the active release reads
+# FICUS_) must not restore TAU_ files under it — the rename is finished
+# forward and committed instead.
+epr_host forward '{"name":"ficus"}'
+ENV_RENAME_PENDING=0
+migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel" 2>/dev/null
+# A step the rename had not reached yet (a half-renamed host).
+printf 'TAU_MANAGED=1\nTAU_PLATFORM_INSTANCE_TOKEN=t\n' >"${FICUS_MANAGED_ENV_PATH}" # legacy-env
+env_prefix_on_exit 143 2>/dev/null
+expect_eq 'env_prefix_on_exit (active FICUS): keeps and finishes the rename instead of restoring' \
+  "$(host_env_prefix "${SRC_DEST}/.env"):$(<"${FICUS_MANAGED_ENV_PATH}")" $'FICUS:FICUS_MANAGED=1\nFICUS_PLATFORM_INSTANCE_TOKEN=t'
+expect_eq 'env_prefix_on_exit (active FICUS): commits — no journal, flag cleared' \
+  "${ENV_RENAME_PENDING}:$([[ -e ${ENV_RENAME_BACKUP_ROOT}/PENDING ]] && echo left || echo gone)" '0:gone'
+# The rollback hook runs after the swap back: active TAU again -> restore.
+epr_host rollback-hook '{"name":"tau"}'
+ENV_RENAME_PENDING=0
+migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel" 2>/dev/null
+EPR_RB_SET=${ENV_RENAME_BACKUP_SET}
+env_prefix_restore_pending 2>/dev/null
+expect_eq 'env_prefix_restore_pending (the rollback hook, active TAU): restores byte for byte' "$(epr_matches_manifest "${EPR_RB_SET}")" 'yes'
+# When the active release cannot be told, nothing is restored or committed:
+# the journal is kept for the next run's reconcile.
+epr_host unknown '{"name":"other"}'
+ENV_RENAME_PENDING=0
+migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel" 2>/dev/null
+env_prefix_on_exit 1 2>/dev/null
+expect_eq 'env_prefix_on_exit (active release unknown): files stay renamed, journal kept' \
+  "$(host_env_prefix "${SRC_DEST}/.env"):$([[ -e ${ENV_RENAME_BACKUP_ROOT}/PENDING ]] && echo kept || echo gone)" 'FICUS:kept'
+# The state Ruling 29 forbids — TAU_ files, a FICUS_ release, no journal —
+# is never produced by any of the settle paths above.
+epr_forbidden_state() { # prints "forbidden" for ENV=TAU / RELEASE=FICUS / no journal
+  if [[ $(host_env_prefix "${SRC_DEST}/.env") == TAU && ! -e ${ENV_RENAME_BACKUP_ROOT}/PENDING ]] &&
+    [[ $(core_release_env_prefix "$(active_release_tree)" 2>/dev/null) == FICUS ]]; then
+    echo forbidden
+  else
+    echo ok
+  fi
+}
+for epr_rel in '{"name":"tau"}' '{"name":"ficus"}'; do
+  for epr_rc in 1 129 130 143; do
+    epr_host "matrix-${epr_rc}" "${epr_rel}"
+    ENV_RENAME_PENDING=0
+    migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel" 2>/dev/null
+    env_prefix_on_exit "${epr_rc}" 2>/dev/null
+    expect_eq "settle matrix (release ${epr_rel}, rc ${epr_rc}): never TAU_ files under a FICUS_ release without a journal" \
+      "$(epr_forbidden_state)" 'ok'
+  done
+done
+
+# M3: a reconcile removes the staging files an interrupted rename left.
+epr_host staging '{"name":"tau"}'
+ENV_RENAME_PENDING=0
+migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel" 2>/dev/null
+: >"$(dirname "${FICUS_MANAGED_ENV_PATH}")/.managed.env.ficus-rename.AbC123"
+: >"${SRC_DEST}/..env.ficus-restore.XyZ789"
+: >"${SRC_DEST}/.dotenv-unrelated"
+ENV_RENAME_PENDING=0
+env_prefix_reconcile 2>/dev/null
+expect_eq 'env_prefix_reconcile: removes leftover .<name>.ficus-rename.* / .ficus-restore.* staging files' \
+  "$(find "$(dirname "${FICUS_MANAGED_ENV_PATH}")" "${SRC_DEST}" -maxdepth 1 -name '*.ficus-re*' | wc -l | tr -d ' ')" '0'
+expect_eq 'env_prefix_reconcile: ...and nothing else' "$([[ -e ${SRC_DEST}/.dotenv-unrelated ]] && echo kept)" 'kept'
+
+# M2: a TAU_ line inside a multi-line value (a PEM block) is value text — an
+# otherwise clean host makes no backup set, run after run.
+epr_host pem '{"name":"ficus"}'
+printf 'FICUS_ENCRYPTION_KEY=k\nFICUS_CERT="-----BEGIN\nTAU_NOT_A_KEY=x\n-----END"\n' >"${SRC_DEST}/.env" # legacy-env
+printf 'FICUS_MANAGED=1\n' >"${FICUS_MANAGED_ENV_PATH}"
+for epr_f in "$(epr_unit api)" "$(epr_unit worker)" "$(epr_unit api).d/extra.conf"; do
+  unitfile_rename_env_prefix "${epr_f}" TAU FICUS >/dev/null 2>&1
+done
+for epr_i in 1 2; do
+  ENV_RENAME_PENDING=0
+  migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel" 2>/dev/null
+done
+expect_eq 'migrate_env_prefix_host: a TAU_ line inside a PEM value makes no set' \
+  "$([[ -d ${ENV_RENAME_BACKUP_ROOT} ]] && find "${ENV_RENAME_BACKUP_ROOT}" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ' || echo 0):${ENV_RENAME_PENDING}" '0:0'
 
 # An all-FICUS_ host: no set, no journal.
 epr_host clean '{"name":"ficus"}'
@@ -5820,7 +5917,7 @@ expect_eq 'converted restore without unit templates: keeps the journal' "$([[ -e
 ENV_RENAME_PENDING=0
 
 # tau-backup.sh is re-rendered from the template during the rename.
-epr_host backup '{"name":"ficus"}'
+epr_host backup '{"name":"tau"}'
 render_backup_script_content "${SCRIPT_DIR}/tau-backup.sh.tmpl" "${SRC_DEST}" /home/x/.tau external '' \
   https://s3.example.com us-east-1 bucket pfx "${BACKUP_ENV_TARGET}" | sed 's/FICUS_/TAU_/g' >"${BACKUP_SCRIPT_PATH}" # legacy-env
 chmod 0750 "${BACKUP_SCRIPT_PATH}"
@@ -5851,6 +5948,72 @@ printf '{"name":"tau"}' >"${SRC_DEST}/releases/rel/package.json"
 expect_match 'require_host_env_prefix: a FICUS .env under a pre-rename active release is refused' \
   "$( (require_host_env_prefix FICUS "${SRC_DEST}/.env") 2>&1)" 'active release .* reads TAU_\* settings'
 
+# --- M11: one toolkit run at a time (flock on the backup root) --------------
+if have flock; then
+  export ENV_RENAME_BACKUP_ROOT="${EPR}/lock-bk"
+  mkdir -p "${ENV_RENAME_BACKUP_ROOT}"
+  mkfifo "${EPR}/lock-fifo"
+  ( flock 8; : >"${EPR}/lock-held"; read -r _ <"${EPR}/lock-fifo" ) 8>>"${ENV_RENAME_BACKUP_ROOT}/.lock" &
+  EPR_LOCK_PID=$!
+  for epr_i in $(seq 1 100); do [[ -e ${EPR}/lock-held ]] && break; sleep 0.1; done
+  expect_match 'env_prefix_lock: a second run waits, then refuses while another holds the lock' \
+    "$( (ENV_RENAME_LOCK_WAIT=1 env_prefix_lock) 2>&1; echo "rc=$?")" 'holds .*\.lock.*rc=1'
+  printf 'go\n' >"${EPR}/lock-fifo"
+  wait "${EPR_LOCK_PID}" 2>/dev/null || true
+  expect_eq 'env_prefix_lock: free again once the other run exits' "$( (ENV_RENAME_LOCK_WAIT=1 env_prefix_lock) 2>/dev/null; echo "rc=$?")" 'rc=0'
+  expect_eq 'env_prefix_lock: the backup root stays 0700' "$(epr_mode "${ENV_RENAME_BACKUP_ROOT}")" '700'
+else
+  log_warn 'flock not on PATH — skipping the env_prefix_lock cases (Linux hosts have it)'
+fi
+
+# --- M12: git mode reads the TARGET's package.json before the checkout moves --
+if have git; then
+  EPR_GIT="${EPR}/git-src"
+  git init -q "${EPR_GIT}/origin"
+  (
+    cd "${EPR_GIT}/origin"
+    printf '{"name":"ficus"}\n' >package.json
+    git add package.json
+    git -c user.email=t@example.com -c user.name=t commit -q -m ficus
+    git branch -q -M main
+    printf '{"name":"tau"}\n' >package.json
+    git -c user.email=t@example.com -c user.name=t commit -q -am tau
+    git -c user.email=t@example.com -c user.name=t tag -a -m old-release tau-release
+    git reset -q --hard HEAD~1
+  )
+  git clone -q "${EPR_GIT}/origin" "${EPR_GIT}/dest"
+  expect_eq 'git_rev_env_prefix: reads a revision it is not checked out at' \
+    "$(git_rev_env_prefix "${EPR_GIT}/dest" tau-release):$(git_rev_env_prefix "${EPR_GIT}/dest" HEAD)" 'TAU:FICUS'
+  expect_eq 'git_rev_env_prefix: an unknown revision dies' \
+    "$( (git_rev_env_prefix "${EPR_GIT}/dest" no-such-rev) >/dev/null 2>&1; echo "rc=$?")" 'rc=1'
+  # git_source_sync hands the hook the revision BEFORE it checks it out, and a
+  # hook that dies leaves the checkout where it was.
+  epr_git_hook() { printf 'hook %s head=%s\n' "$1" "$(git -C "${SRC_DEST}" rev-parse --short HEAD)" >>"${EPR}/git-hook.log"; }
+  epr_git_hook_refuses() { die "refused $1"; }
+  EPR_GIT_HEAD=$(git -C "${EPR_GIT}/dest" rev-parse --short HEAD)
+  EPR_GIT_OUT=$(
+    SRC_MODE=git-ssh SRC_REPO="${EPR_GIT}/origin" SRC_REF=tau-release SRC_DEST="${EPR_GIT}/dest" SRC_DEPLOY_KEY=/dev/null
+    GIT_PRE_CHECKOUT_HOOK=epr_git_hook
+    git_source_sync >/dev/null 2>&1
+    git -C "${SRC_DEST}" rev-parse --short HEAD
+  )
+  expect_match 'git_source_sync: the pre-checkout hook sees the target before the checkout moves' \
+    "$(cat "${EPR}/git-hook.log" 2>/dev/null)" "^hook tau-release head=${EPR_GIT_HEAD}$"
+  git -C "${EPR_GIT}/dest" checkout -q -f "${EPR_GIT_HEAD}"
+  EPR_GIT_RC=0
+  (
+    SRC_MODE=git-ssh SRC_REPO="${EPR_GIT}/origin" SRC_REF=tau-release SRC_DEST="${EPR_GIT}/dest" SRC_DEPLOY_KEY=/dev/null
+    GIT_PRE_CHECKOUT_HOOK=epr_git_hook_refuses
+    git_source_sync
+  ) >/dev/null 2>&1 || EPR_GIT_RC=$?
+  expect_eq 'git_source_sync: a refusing hook stops the sync with the checkout unmoved' \
+    "${EPR_GIT_RC}:$(git -C "${EPR_GIT}/dest" rev-parse --short HEAD)" "1:${EPR_GIT_HEAD}"
+  unset -f epr_git_hook epr_git_hook_refuses
+  : "${EPR_GIT_OUT}"
+else
+  log_warn 'git not on PATH — skipping the git pre-checkout cases'
+fi
+
 # --- errexit-proof failure injection -----------------------------------------
 # Each case runs the writer in both contexts (plain and inside an `if`
 # condition, where bash suppresses errexit) with one step forced to fail, and
@@ -5864,9 +6027,9 @@ epr_inject_setup_printf() {
   }
 }
 epr_inject_setup_mktemp() { mktemp() { return 1; }; }
-epr_inject_setup_chown() { chown() { return 1; }; }
+epr_inject_setup_chmod() { chmod() { return 1; }; }
 epr_inject_setup_cat() { cat() { return 1; }; }
-for epr_case in mv printf mktemp chown cat; do
+for epr_case in mv printf mktemp chmod cat; do
   for epr_ctx in plain suppressed; do
     printf '# c\nTAU_A=1\nTAU_ENCRYPTION_KEY=k\n' >"${EPR}/inj.env" # legacy-env
     cp -p "${EPR}/inj.env" "${EPR}/inj.orig"
@@ -5914,26 +6077,34 @@ done
 # Same fixture, both implementations (packages/shared/src/legacy-env.ts): the
 # renamed content, or a protected-conflict refusal on both sides.
 EPR_TS_LIB="${SCRIPT_DIR}/../../packages/shared/src/legacy-env.ts"
+if [[ -f ${EPR_TS_LIB} ]] && ! have bun; then
+  # In this repo the TypeScript twin is right here: a run without bun would
+  # silently drop the parity guarantee, so it is a failure, not a skip.
+  FAIL=$((FAIL + 1))
+  log_error 'FAIL: TS parity — bun is not on PATH, so envfile_rename_prefix cannot be checked against renameEnvPrefix'
+fi
 if [[ -f ${EPR_TS_LIB} ]] && have bun; then
   cat >"${EPR}/parity.ts" <<TSEOF
 import { readFileSync } from 'node:fs'
-import { renameEnvPrefix } from '$(cd "$(dirname "${EPR_TS_LIB}")" && pwd)/legacy-env.ts'
+import { EnvPrefixConflictError, renameEnvPrefix } from '$(cd "$(dirname "${EPR_TS_LIB}")" && pwd)/legacy-env.ts'
 try {
   process.stdout.write(renameEnvPrefix(readFileSync(process.argv[2], 'utf8'), 'TAU_', 'FICUS_').content)
-} catch {
-  process.stdout.write('<conflict>')
+} catch (error) {
+  process.stdout.write(error instanceof EnvPrefixConflictError ? '<conflict>' : '<ts-error>')
 }
 TSEOF
   epr_parity() { # LABEL CONTENT
-    local ts sh
+    local ts sh err
     printf '%s' "$2" >"${EPR}/parity.env"
-    ts=$(bun "${EPR}/parity.ts" "${EPR}/parity.env" && printf x)
+    ts=$(bun "${EPR}/parity.ts" "${EPR}/parity.env" && printf x) || ts='<bun-failed>x'
     ts=${ts%x}
-    if (envfile_rename_prefix "${EPR}/parity.env" TAU FICUS) >/dev/null 2>&1; then
+    if err=$( (envfile_rename_prefix "${EPR}/parity.env" TAU FICUS) 2>&1 >/dev/null); then
       sh=$(cat "${EPR}/parity.env" && printf x)
       sh=${sh%x}
+    elif [[ ${err} == *'disagree on this host'* ]]; then
+      sh='<conflict>' # the protected-conflict refusal, and only that
     else
-      sh='<conflict>'
+      sh='<sh-error>'
     fi
     expect_eq "TS parity: $1" "${sh}" "${ts}"
   }
@@ -5971,7 +6142,7 @@ BACKUP_SCRIPT_PATH=${EPR_SAVED_BACKUP_SCRIPT_PATH}
 unset ENV_RENAME_BACKUP_ROOT SRC_DEST RUN_USER BUN_BIN DB_MODE CORE_LAYOUT EPR_H
 ENV_RENAME_PENDING=0 ENV_RENAME_BACKUP_SET='' ARTIFACT_CONVERTED_THIS_RUN=0 CFG_FILE=''
 unset -f epr_mode epr_unit epr_host epr_matches_manifest epr_parity epr_inject_setup_mv epr_inject_setup_printf \
-  epr_inject_setup_mktemp epr_inject_setup_chown epr_inject_setup_cat epr_inject_setup_cp epr_inject_setup_cmp epr_inject_setup_sync
+  epr_inject_setup_mktemp epr_inject_setup_chmod epr_inject_setup_cat epr_inject_setup_cp epr_inject_setup_cmp epr_inject_setup_sync
 rm -rf "${EPR}"
 
 rm -f "${HI_OUT_FILE}"

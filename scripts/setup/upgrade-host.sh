@@ -135,6 +135,7 @@ if [[ -n ${RESTORE_ENV_SET} ]]; then
     die "--restore-env-backup: ${RESTORE_ENV_SET} was taken during a git->artifact conversion, so restoring it re-renders the core units — pass --config <the host's tau-setup.yaml> as well"
   fi
   require_root_capability
+  env_prefix_lock
   restore_rc=0
   env_rename_backup_restore "${RESTORE_ENV_SET}" || restore_rc=$?
   case ${restore_rc} in
@@ -230,6 +231,8 @@ BUN_BIN=/usr/local/bin/bun
 # FICUS_*. Then the traps that restore THIS run's rename if it fails, is
 # rolled back or is signalled (bash runs an EXIT trap with $?=0 on a signal,
 # hence the explicit TERM/HUP/INT ones).
+# One toolkit run at a time may rename, restore or reconcile this host.
+env_prefix_lock
 reconcile_rc=0
 env_prefix_reconcile || reconcile_rc=$?
 [[ ${reconcile_rc} -eq 0 ]] ||
@@ -273,6 +276,11 @@ artifact_upgrade() {
   # travel with the toolkit whenever the host has a nightly backup.
   if [[ -f ${BACKUP_SCRIPT_PATH} && ! -f ${SCRIPT_DIR}/tau-backup.sh.tmpl ]]; then
     die "missing ${SCRIPT_DIR}/tau-backup.sh.tmpl — this host has ${BACKUP_SCRIPT_PATH}, which the env rename re-renders; push scripts/setup/tau-backup.sh.tmpl alongside lib.sh and upgrade-host.sh"
+  fi
+  # ...and it must be a script this toolkit can re-render: parse it now,
+  # before any migration, rather than find out in the pre-flip hook.
+  if [[ -f ${BACKUP_SCRIPT_PATH} ]]; then
+    backup_script_read_values "${BACKUP_SCRIPT_PATH}"
   fi
   ensure_swapfile
   ensure_system_bun_node "${RUN_USER}" "$(command -v bun)"
@@ -425,19 +433,30 @@ require_env_file_sandbox_runtime "${SRC_DEST}/.env"
 if [[ -f ${BACKUP_SCRIPT_PATH} && ! -f ${SCRIPT_DIR}/tau-backup.sh.tmpl ]]; then
   die "missing ${SCRIPT_DIR}/tau-backup.sh.tmpl — this host has ${BACKUP_SCRIPT_PATH}, which the env rename re-renders; push scripts/setup/tau-backup.sh.tmpl alongside lib.sh and upgrade-host.sh"
 fi
+if [[ -f ${BACKUP_SCRIPT_PATH} ]]; then
+  backup_script_read_values "${BACKUP_SCRIPT_PATH}"
+fi
 
 BEFORE_SHA=$(git -C "${SRC_DEST}" rev-parse HEAD)
 
+# The env prefix the target revision reads (its committed package.json name,
+# N-C2), asked after the fetch and BEFORE the checkout moves: a revision that
+# predates the Ficus rename cannot read a renamed host's settings, so it is
+# refused with the checkout, the build and the database untouched.
+git_target_prefix_check() { # REV
+  GIT_TARGET_PREFIX=$(git_rev_env_prefix "${SRC_DEST}" "$1") || die "could not tell which env prefix revision $1 reads"
+  if [[ ${GIT_TARGET_PREFIX} == TAU && $(host_env_prefix "${SRC_DEST}/.env") == FICUS ]]; then
+    die "target Core predates the Ficus rename but this host's settings are FICUS_*; re-run with --restore-env-backup <set> (see $(env_rename_backup_root)) or choose a Ficus release"
+  fi
+}
+
 log_step "phase 1/4: source → ${SRC_REF}"
+# shellcheck disable=SC2034 # read by lib.sh's git_source_sync
+GIT_PRE_CHECKOUT_HOOK=git_target_prefix_check
 git_source_sync
 
-# The env prefix the new checkout reads (its package.json name, N-C2). A
-# checkout that predates the Ficus rename cannot read a renamed host's
-# settings: refuse before building or migrating anything.
+# The checkout's own package.json now decides (it is the revision above).
 GIT_TARGET_PREFIX=$(core_release_env_prefix "${SRC_DEST}") || die "could not tell which env prefix ${SRC_DEST} reads"
-if [[ ${GIT_TARGET_PREFIX} == TAU && $(host_env_prefix "${SRC_DEST}/.env") == FICUS ]]; then
-  die "target Core predates the Ficus rename but this host's settings are FICUS_*; re-run with --restore-env-backup <set> (see $(env_rename_backup_root)) or choose a Ficus release"
-fi
 
 log_step "phase 2/4: dependencies + build (core + cli${CORE_SERVE_WEB:+ + web}) — ~1-2 min, silent while it builds"
 build_app "${SRC_DEST}" "${CORE_SERVE_WEB}"

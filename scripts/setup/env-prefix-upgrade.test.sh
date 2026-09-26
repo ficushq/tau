@@ -9,9 +9,13 @@
 #     (.env, managed.env, backup.env, the yaml, the units, tau-backup.sh),
 #     keeps one backup set and leaves no journal;
 #   * a failed health check rolls back AND restores all of them byte for byte;
-#   * SIGTERM / SIGHUP after the rename restore them (exit 143 / 129);
+#   * the env files always end up matching the ACTIVE release (Controller
+#     Ruling 29): SIGTERM / SIGHUP / SIGINT before the flip restore them,
+#     after it keep and commit the rename (exit 143 / 129 / 130); a dropped
+#     control connection (SIGPIPE) settles the same way;
 #   * SIGKILL between the rename and the flip leaves the journal, and the next
-#     run with the same inputs reconciles (restores) and then completes;
+#     run with the same inputs reconciles (restores) and then completes; a
+#     SIGKILL after the flip is reconciled FORWARD by the next toolkit run;
 #   * a git->artifact conversion that rolls back restores the files and
 #     re-renders the units with TAU_ROOT for the current layout (N-I3);
 #   * a pre-rename target on a renamed host, and conflicting protected
@@ -155,6 +159,21 @@ done
 exec ${REAL_CURL} "\$@"
 SHIMEOF
 chmod +x "${SHIM}"/*
+# A non-interactive shell starts background jobs with SIGINT/SIGQUIT ignored,
+# and bash cannot trap a signal that was ignored when it started. The
+# background runs go through this, which puts both back to the default (what
+# a terminal session gives the toolkit) before exec'ing the command — and
+# SIGPIPE too, which python itself ignores and exec would otherwise pass on
+# (masking exactly the dropped-connection case below).
+cat >"${SCRATCH}/sigdefault" <<'SIGEOF'
+#!/usr/bin/env python3
+import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])
+SIGEOF
+chmod +x "${SCRATCH}/sigdefault"
 
 # ------------------------------------------------------------ artifact fixture
 openssl genpkey -algorithm ed25519 -out "${SCRATCH}/key.pem" 2>/dev/null
@@ -224,7 +243,7 @@ publish tau "${SHA_OLD_ART}" tau '' >"${SCRATCH}/tau.artifact.env"
 
 # ---------------------------------------------------------------- fake host
 # A host on a pre-rename (TAU) artifact release, with every env-bearing file.
-unit() { printf '%s/tau-%s.service' "${H}/units" "$1"; } # unit api|worker
+unit() { printf '%s/tau-%s.service' "${H}/units" "$1"; } # unit api|worker (phase5-unit-name)
 new_host() { # NAME
   H="${SCRATCH}/host-$1"
   DEST="${H}/dest"
@@ -317,6 +336,19 @@ tau_names() { # how many TAU_ names are left across the env-bearing files
 }
 sets() { find "${H}/bk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
 pending() { [[ -e ${H}/bk/PENDING ]] && echo pending || echo none; }
+# Ruling 29's invariant: without a journal, the .env prefix is the prefix
+# the active release reads (TAU_ files under a FICUS_ release, or the
+# reverse, with nothing pending to reconcile them, is a stranded host).
+assert_converged() { # LABEL
+  local env_p rel_p
+  [[ $(pending) == none ]] || {
+    PASS=$((PASS + 1))
+    return 0
+  }
+  env_p=$(bash -c 'source "$1/lib.sh"; host_env_prefix "$2"' _ "${SCRIPT_DIR}" "${DEST}/.env")
+  rel_p=$(bash -c 'source "$1/lib.sh"; SRC_DEST=$2; core_release_env_prefix "$(active_release_tree)"' _ "${SCRIPT_DIR}" "${DEST}" 2>/dev/null)
+  expect_eq "$1: the .env prefix matches the active release's (no journal)" "${env_p}" "${rel_p}"
+}
 
 # Run an entrypoint as the fake host sees it. ARTIFACT_ENV names the file of
 # FICUS_ARTIFACT_* assignments (or '' for none). Sets RC and OUT.
@@ -353,7 +385,7 @@ start_bg() { # ARTIFACT_ENV SCRIPT ARGS...
   local -a envs=()
   mapfile -t envs < <(host_env)
   [[ -z ${artifact_env} ]] || mapfile -t -O "${#envs[@]}" envs <"${artifact_env}"
-  setsid env "${envs[@]}" bash "${SCRIPT_DIR}/${script}" "$@" >"${H}/bg.out" 2>&1 &
+  setsid "${SCRATCH}/sigdefault" env "${envs[@]}" bash "${SCRIPT_DIR}/${script}" "$@" >"${H}/bg.out" 2>&1 &
   BG_PID=$!
   BG_PIDS+=("${BG_PID}")
 }
@@ -414,6 +446,7 @@ expect_match 'upgrade onto a Ficus release: the rename (its daemon-reload) happe
 # A second upgrade onto the same release renames nothing and makes no new set.
 upgrade "${SCRATCH}/ficus.artifact.env"
 expect_eq 're-running the upgrade: exits 0, still one set, no journal' "${RC}:$(sets):$(pending)" '0:1:none'
+assert_converged 'upgrade onto a Ficus release'
 
 # ======================================== 2. failed health check: roll back
 new_host rollback # only the old release is healthy
@@ -425,25 +458,110 @@ expect_eq 'unhealthy new release: no journal is left' "$(pending)" 'none'
 expect_eq 'unhealthy new release: current is back on the old release' "$(readlink "${DEST}/current")" "${OLD_REL}"
 expect_match 'unhealthy new release: the restore ran before the rollback restart' \
   "$(tr '\n' '|' <"${CALLS}")" 'systemctl restart[^|]*\|.*systemctl daemon-reload\|.*systemctl restart'
+assert_converged 'unhealthy new release'
 
-# ============================================ 3. SIGTERM / SIGHUP after rename
-for sig in TERM HUP; do
-  new_host "signal-${sig}"
+# ================================= 3. signals: files follow the ACTIVE release
+# Controller Ruling 29: after a signal the env files must match the release
+# that is serving. Before the flip (old release active) the set is restored;
+# after it (new release active) the rename is kept and committed.
+for sig in TERM HUP INT; do
+  case ${sig} in
+    TERM) want_rc=143 ;;
+    HUP) want_rc=129 ;;
+    INT) want_rc=130 ;;
+  esac
+  # --- after the flip: blocked in the health wait (the activation's restart).
+  new_host "after-flip-${sig}"
   : >"${CTL}/block-restart"
   start_bg "${SCRATCH}/ficus.artifact.env" upgrade-host.sh --config "${CONFIG}"
   wait_blocked || true
-  set_dir=$(find "${H}/bk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1)
-  expect_eq "SIG${sig}: the run was stopped after the rename (journaled)" "$(pending)" 'pending'
+  expect_match "SIG${sig} after the flip: stopped with the new release active" "$(readlink "${DEST}/current")" "${SHA_NEW}-"
   kill "-${sig}" "${BG_PID}"
   release_block
   wait_bg
-  expect_eq "SIG${sig}: exits $([[ ${sig} == TERM ]] && echo 143 || echo 129)" "${RC}" "$([[ ${sig} == TERM ]] && echo 143 || echo 129)"
-  expect_eq "SIG${sig}: every file is byte-identical to the MANIFEST" "$(same_as_manifest "${set_dir}")" 'same'
-  expect_eq "SIG${sig}: ...which is the host as it was" "$(same_as "${H}/pristine")" 'same'
-  expect_eq "SIG${sig}: no journal is left" "$(pending)" 'none'
+  expect_eq "SIG${sig} after the flip: exits ${want_rc}" "${RC}" "${want_rc}"
+  expect_eq "SIG${sig} after the flip: the files stay renamed (FICUS_, what the active release reads)" "$(tau_names)" '0'
+  expect_eq "SIG${sig} after the flip: the rename is committed (no journal)" "$(pending)" 'none'
+  assert_converged "SIG${sig} after the flip"
+
+  # --- before the flip: blocked on the rename's own daemon-reload.
+  new_host "before-flip-${sig}"
+  : >"${CTL}/block-daemon-reload"
+  start_bg "${SCRATCH}/ficus.artifact.env" upgrade-host.sh --config "${CONFIG}"
+  wait_blocked || true
+  set_dir=$(find "${H}/bk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1)
+  expect_eq "SIG${sig} before the flip: the run was stopped after the rename (journaled)" "$(pending)" 'pending'
+  kill "-${sig}" "${BG_PID}"
+  release_block
+  wait_bg
+  expect_eq "SIG${sig} before the flip: exits ${want_rc}" "${RC}" "${want_rc}"
+  expect_eq "SIG${sig} before the flip: every file is byte-identical to the MANIFEST" "$(same_as_manifest "${set_dir}")" 'same'
+  expect_eq "SIG${sig} before the flip: ...which is the host as it was" "$(same_as "${H}/pristine")" 'same'
+  expect_eq "SIG${sig} before the flip: no journal, current unmoved" "$(pending):$(readlink "${DEST}/current")" "none:${OLD_REL}"
+  assert_converged "SIG${sig} before the flip"
 done
 
+# ================== 3b. SIGKILL after the flip: the reconcile finishes FORWARD
+new_host kill-after-flip
+: >"${CTL}/block-restart"
+start_bg "${SCRATCH}/ficus.artifact.env" upgrade-host.sh --config "${CONFIG}"
+wait_blocked || true
+kill -KILL -- "-${BG_PID}" 2>/dev/null || kill -KILL "${BG_PID}"
+wait_bg
+expect_eq 'SIGKILL after the flip: the journal is left, the new release active, the files renamed' \
+  "$(pending):$(tau_names)" 'pending:0'
+expect_match 'SIGKILL after the flip: current is the new release' "$(readlink "${DEST}/current")" "${SHA_NEW}-"
+# The next toolkit run — here the control plane's artifact sync — reconciles.
+run_script '' apply-artifacts.sh --config "${CONFIG}" "${H}/stage"
+expect_eq 'SIGKILL after the flip, then apply-artifacts --config: applies (exit 0)' "${RC}" '0'
+expect_match 'SIGKILL after the flip: the reconcile finished the rename forward' "${OUT}" 'reconcile: finished the rename'
+expect_eq 'SIGKILL after the flip: files FICUS_, journal committed' "$(tau_names):$(pending)" '0:none'
+assert_converged 'SIGKILL after the flip, reconciled'
+
+# ============== 3c. the control connection drops (SIGPIPE on the next write)
+# The upgrade's stdout/stderr go to a reader that is killed mid-run — what a
+# dropped SSH session does. The next log write must not kill the script
+# before its traps can settle the rename.
+run_with_reader_killed() { # NAME BLOCK_VERB
+  local -a envs=()
+  new_host "$1"
+  : >"${CTL}/block-$2"
+  mapfile -t envs < <(host_env)
+  mapfile -t -O "${#envs[@]}" envs <"${SCRATCH}/ficus.artifact.env"
+  mkfifo "${H}/out.fifo"
+  (
+    rc=0
+    setsid "${SCRATCH}/sigdefault" env "${envs[@]}" bash "${SCRIPT_DIR}/upgrade-host.sh" --config "${CONFIG}" >"${H}/out.fifo" 2>&1 || rc=$?
+    printf '%s' "${rc}" >"${H}/rc"
+  ) &
+  BG_PID=$!
+  BG_PIDS+=("${BG_PID}")
+  cat "${H}/out.fifo" >"${H}/seen.log" &
+  local reader=$!
+  wait_blocked || true
+  kill -KILL "${reader}" 2>/dev/null || true
+  { wait "${reader}" || true; } 2>/dev/null
+  release_block
+  local _try
+  for _try in $(seq 1 600); do
+    [[ -s ${H}/rc ]] && break
+    "${REAL_SLEEP}" 0.1
+  done
+  RC=$(cat "${H}/rc" 2>/dev/null || echo none)
+}
+run_with_reader_killed pipe-before-flip daemon-reload
+expect_eq 'reader gone before the flip: the script did not die of SIGPIPE' "$([[ ${RC} != 141 && ${RC} != none ]] && echo ok || echo "rc ${RC}")" 'ok'
+expect_eq 'reader gone before the flip: the set is restored byte for byte' "$(same_as "${H}/pristine")" 'same'
+expect_eq 'reader gone before the flip: no journal, current unmoved' "$(pending):$(readlink "${DEST}/current")" "none:${OLD_REL}"
+assert_converged 'reader gone before the flip'
+run_with_reader_killed pipe-after-flip restart
+expect_eq 'reader gone after the flip: the script did not die of SIGPIPE' "$([[ ${RC} != 141 && ${RC} != none ]] && echo ok || echo "rc ${RC}")" 'ok'
+expect_eq 'reader gone after the flip: no journal is left' "$(pending)" 'none'
+assert_converged 'reader gone after the flip'
+
 # ======================= 4. SIGKILL between the rename and the flip, then re-run
+# (Before the flip the active release is the old one, so the reconcile
+# restores; see 3b for a SIGKILL after it, which finishes forward.)
 new_host crash
 # The rename's own daemon-reload (after renaming, before the flip) blocks.
 : >"${CTL}/block-daemon-reload"
@@ -465,6 +583,7 @@ expect_eq 'the re-run after a SIGKILL: then renamed and completed' "$(tau_names)
 expect_eq 'the re-run after a SIGKILL: two sets (the restored one and the committed one)' "$(sets)" '2'
 expect_eq 'the re-run after a SIGKILL: the first set still matches the host as it was' \
   "$(cmp -s "${crash_set}/1" "${H}/pristine/dest/.env" && echo same)" 'same'
+assert_converged 'the re-run after a SIGKILL'
 
 # ========================= 5. conversion (git -> artifact) that rolls back
 new_host convert
@@ -493,6 +612,7 @@ expect_eq 'converted host: the units are re-rendered for the current layout with
   "$(grep -hc "^Environment=TAU_ROOT=${DEST}/current$" "$(unit api)" "$(unit worker)" | tr '\n' ' ')" '1 1 ' # legacy-env
 expect_eq 'converted host: no FICUS_ROOT is left in the units' "$(grep -hc '^Environment=FICUS_ROOT' "$(unit api)" "$(unit worker)" | tr '\n' ' ')" '0 0 '
 expect_eq 'converted host: no journal is left' "$(pending)" 'none'
+assert_converged 'converted host'
 
 # ============================ 6. a pre-rename target on a renamed host is refused
 new_host downgrade
@@ -523,6 +643,18 @@ expect_eq 'conflicting encryption keys: never prints either value' \
 expect_eq 'conflicting encryption keys: nothing was written' "$(same_as "${H}/pristine")" 'same'
 expect_eq 'conflicting encryption keys: no set, no journal' "$(sets):$(pending)" '0:none'
 expect_eq 'conflicting encryption keys: current did not move' "$(readlink "${DEST}/current")" "${OLD_REL}"
+# (No convergence check here: the host carried both spellings before the run,
+# which is exactly what the operator is asked to fix; the run changed nothing.)
+
+# =========== 7b. a tau-backup.sh the rename could not re-render: refused early
+new_host bad-backup-script
+sed -i '/^DEST=/d' "${H}/bin/tau-backup.sh"
+snapshot "${H}/pristine"
+upgrade "${SCRATCH}/ficus.artifact.env"
+expect_eq 'unparseable tau-backup.sh: the upgrade stops' "${RC}" '1'
+expect_match 'unparseable tau-backup.sh: says why' "${OUT}" 'has no DEST=.* line'
+expect_eq 'unparseable tau-backup.sh: in preflight — no migration ran, nothing renamed, no set' \
+  "$([[ -e ${H}/migrate-proof ]] && echo migrated || echo none):$(same_as "${H}/pristine"):$(sets)" 'none:same:0'
 
 # ======================== 8. apply-artifacts.sh --config: refuse a mismatch
 new_host apply

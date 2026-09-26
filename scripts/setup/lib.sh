@@ -22,10 +22,13 @@ fi
 
 _ts() { date '+%H:%M:%S'; }
 
-log_info() { printf '%s %sinfo%s  %s\n' "$(_ts)" "$_C_INFO" "$_C_OFF" "$*" >&2; }
-log_warn() { printf '%s %swarn%s  %s\n' "$(_ts)" "$_C_WARN" "$_C_OFF" "$*" >&2; }
-log_error() { printf '%s %serror%s %s\n' "$(_ts)" "$_C_ERR" "$_C_OFF" "$*" >&2; }
-log_step() { printf '\n%s %s==>%s %s\n' "$(_ts)" "$_C_STEP" "$_C_OFF" "$*" >&2; }
+# A log write never fails the caller: when the reader of stderr is gone (a
+# dropped SSH session), the env rename's restore and reconcile must still run
+# to the end rather than die on the log line before them.
+log_info() { printf '%s %sinfo%s  %s\n' "$(_ts)" "$_C_INFO" "$_C_OFF" "$*" >&2 || true; }
+log_warn() { printf '%s %swarn%s  %s\n' "$(_ts)" "$_C_WARN" "$_C_OFF" "$*" >&2 || true; }
+log_error() { printf '%s %serror%s %s\n' "$(_ts)" "$_C_ERR" "$_C_OFF" "$*" >&2 || true; }
+log_step() { printf '\n%s %s==>%s %s\n' "$(_ts)" "$_C_STEP" "$_C_OFF" "$*" >&2 || true; }
 
 # Total number of phase_step call sites in setup-host.sh. Pinned by a test in
 # lib.test.sh so adding a phase without a marker fails CI rather than silently
@@ -2469,6 +2472,17 @@ git_source_sync() {
     else
       git -C "${SRC_DEST}" fetch --tags --force origin
     fi
+    # Before the checkout moves: a caller may need to look at the target
+    # revision first (upgrade-host.sh reads its package.json to refuse a
+    # pre-rename target on a renamed host). It is handed the revision the
+    # checkout below resolves to; a failure there dies with nothing moved.
+    if [[ -n ${GIT_PRE_CHECKOUT_HOOK:-} ]]; then
+      if git -C "${SRC_DEST}" show-ref --verify --quiet "refs/remotes/origin/${SRC_REF}"; then
+        "${GIT_PRE_CHECKOUT_HOOK}" "origin/${SRC_REF}"
+      else
+        "${GIT_PRE_CHECKOUT_HOOK}" "${SRC_REF}"
+      fi
+    fi
     # --force (-f) is deliberate: a re-run/upgrade must be authoritative over the
     # checkout. The build writes tracked files in place (bun.lock is re-resolved
     # by `bun install`, tsconfig.tsbuildinfo by tsc), so a plain checkout aborts
@@ -3686,7 +3700,7 @@ _epr_rename_content() { # RAW FROM TO
     _epr_target "${suffix}" || continue
     tval=${_EPR_TV}
     _epr_normalize "${_E_VALUE[k]}"
-    if [[ -n ${_EPR_OUT} && ${_EPR_OUT} != "${tval}" ]] && ! _epr_in "${_E_KEY[k]}" "${_EPR_PROTECTED[@]}"; then
+    if [[ -n ${_EPR_OUT} && ${_EPR_OUT} != "${tval}" ]] && ! _epr_in "${_E_KEY[k]}" ${_EPR_PROTECTED[@]+"${_EPR_PROTECTED[@]}"}; then
       _EPR_PROTECTED+=("${_E_KEY[k]}")
     fi
   done
@@ -3698,7 +3712,7 @@ _epr_rename_content() { # RAW FROM TO
   for ((k = 0; k < n; k++)); do
     if [[ ${_E_KEY[k]} == "${to}_"?* ]]; then
       suffix=${_E_KEY[k]#"${to}_"}
-      if ! _epr_target "${suffix}" && _epr_in "${suffix}" "${src[@]}"; then
+      if ! _epr_target "${suffix}" && _epr_in "${suffix}" ${src[@]+"${src[@]}"}; then
         drop_at+=("${_E_START[k]}")
       fi
       continue
@@ -3710,7 +3724,7 @@ _epr_rename_content() { # RAW FROM TO
     target=0
     _epr_target "${suffix}" && target=1
     if ((target)) || [[ ${_EPR_TV_STATE} -eq 2 && -z ${val} ]]; then
-      if ((target)) && [[ -n ${val} && ${val} != "${_EPR_TV}" ]] && ! _epr_in "${_E_KEY[k]}" "${_EPR_CONFLICTS[@]}"; then
+      if ((target)) && [[ -n ${val} && ${val} != "${_EPR_TV}" ]] && ! _epr_in "${_E_KEY[k]}" ${_EPR_CONFLICTS[@]+"${_EPR_CONFLICTS[@]}"}; then
         _EPR_CONFLICTS+=("${_E_KEY[k]}")
       fi
       drop_at+=("${_E_START[k]}")
@@ -3724,7 +3738,7 @@ _epr_rename_content() { # RAW FROM TO
     repl_at+=("${_E_START[k]}")
     repl_line+=("${_E_LEAD[k]}${to}_${suffix}=${val}${_E_EOL[k]}")
     _EPR_RENAMED_LINES=$((_EPR_RENAMED_LINES + 1))
-    _epr_in "${_E_KEY[k]}" "${_EPR_RENAMED[@]}" || _EPR_RENAMED+=("${_E_KEY[k]}")
+    _epr_in "${_E_KEY[k]}" ${_EPR_RENAMED[@]+"${_EPR_RENAMED[@]}"} || _EPR_RENAMED+=("${_E_KEY[k]}")
   done
   unset -f _epr_target
 
@@ -3739,7 +3753,7 @@ _epr_rename_content() { # RAW FROM TO
         break
       fi
     done
-    if ((e >= 0)) && _epr_in "${i}" "${drop_at[@]}"; then
+    if ((e >= 0)) && _epr_in "${i}" ${drop_at[@]+"${drop_at[@]}"}; then
       i=$((_E_END[e] + 1))
       continue
     fi
@@ -3762,12 +3776,15 @@ _epr_rename_content() { # RAW FROM TO
 # Copy SRC's mode and owner:group onto DST (GNU --reference, else stat).
 _epr_copy_mode_owner() { # SRC DST
   local mog
-  if ! chmod --reference="$1" -- "$2" 2>/dev/null; then
+  if ! chmod --reference="$1" "$2" 2>/dev/null; then
     mog=$(_file_mode_owner_group "$1") || return 1
     chmod "${mog%% *}" "$2" || return 1
   fi
+  # Only when it differs: an unprivileged caller may not chown even to its
+  # own user when the group is one it is not a member of.
+  mog=$(_file_mode_owner_group "$1") || return 1
+  [[ $(_file_mode_owner_group "$2") == "${mog}" ]] && return 0
   if ! chown --reference="$1" -- "$2" 2>/dev/null; then
-    mog=$(_file_mode_owner_group "$1") || return 1
     chown "${mog#* }" "$2" || return 1
   fi
 }
@@ -3833,7 +3850,7 @@ envfile_prefix_conflicts() { # FILE FROM TO
   read_file_exact "${target}" raw || die "envfile_prefix_conflicts: could not read ${target}"
   _epr_rename_content "${raw}" "${from}" "${to}" || rc=$?
   [[ ${rc} -eq 2 ]] || return 0
-  for key in "${_EPR_PROTECTED[@]}"; do
+  for key in ${_EPR_PROTECTED[@]+"${_EPR_PROTECTED[@]}"}; do
     printf '%s\n' "${key#"${from}_"}"
   done
 }
@@ -3956,76 +3973,83 @@ yaml_rename_env_prefix() { # YAML FROM TO
 # Rename the Environment=<FROM>_… (and Environment="<FROM>_…") assignments of
 # a systemd unit or drop-in to <TO>_, nothing else. Same atomic write.
 # Prints the number of renamed lines.
+# The unit-file rename over CONTENT: sets _EPR_RESULT and _EPR_RENAMED_LINES.
+_epr_unit_rename_content() { # RAW FROM TO
+  local raw=$1 from=$2 to=$3 line out='' sep='' re
+  _EPR_RENAMED_LINES=0
+  re="^Environment=(\"?)${from}_"
+  _epr_split_lines "${raw}"
+  for line in "${_EPR_LINES[@]}"; do
+    if [[ ${line} =~ ${re} ]]; then
+      line="Environment=${BASH_REMATCH[1]}${to}_${line#"Environment=${BASH_REMATCH[1]}${from}_"}"
+      _EPR_RENAMED_LINES=$((_EPR_RENAMED_LINES + 1))
+    fi
+    out+="${sep}${line}"
+    sep=$'\n'
+  done
+  _EPR_RESULT=${out}
+}
+
 unitfile_rename_env_prefix() { # FILE FROM TO
-  local file=$1 from=$2 to=$3 target raw line out='' sep='' count=0 re LC_ALL=C
+  local file=$1 from=$2 to=$3 target raw count LC_ALL=C
   _epr_require_prefixes unitfile_rename_env_prefix "${from}" "${to}"
   if ! _epr_resolve "${file}" target; then
     printf '0\n'
     return 0
   fi
   read_file_exact "${target}" raw || die "unitfile_rename_env_prefix: could not read ${target}"
-  re="^Environment=(\"?)${from}_"
-  _epr_split_lines "${raw}"
-  for line in "${_EPR_LINES[@]}"; do
-    if [[ ${line} =~ ${re} ]]; then
-      line="Environment=${BASH_REMATCH[1]}${to}_${line#"Environment=${BASH_REMATCH[1]}${from}_"}"
-      count=$((count + 1))
-    fi
-    out+="${sep}${line}"
-    sep=$'\n'
-  done
+  _epr_unit_rename_content "${raw}" "${from}" "${to}"
+  count=${_EPR_RENAMED_LINES}
   if ((count > 0)); then
-    _epr_write_atomic "${target}" "${out}" || die "unitfile_rename_env_prefix: ${target} was left unchanged"
+    _epr_write_atomic "${target}" "${_EPR_RESULT}" || die "unitfile_rename_env_prefix: ${target} was left unchanged"
     log_info "${target}: renamed ${count} Environment= line(s) ${from}_ -> ${to}_"
   fi
   printf '%s\n' "${count}"
 }
 
 # Read <P>_SUFFIX from the dotenv FILE into the variable named VAR, preferring
-# FICUS_<SUFFIX> and falling back to the TAU_ spelling (no interpolation, the last
-# assignment wins, like envfile_get). An empty FICUS_ value counts as unset.
-# Returns 1 when neither name is present. For a PROTECTED suffix whose two
-# names hold different non-empty values it DIES, naming the keys only — so
-# call it in the current shell (not inside `$(...)`), where that die ends the
-# run instead of reading as "absent".
+# FICUS_<SUFFIX> and falling back to the TAU_ spelling. The file is parsed the
+# way the rename parses it (_epr_parse_entries: `KEY=` / `export KEY=`,
+# indentation, CRLF, multi-line quoted values; the last assignment wins), and
+# a value is judged by what a dotenv reader sees — trimmed, one level of
+# quotes removed (_epr_normalize). FICUS_ wins only when that value is
+# non-empty (`FICUS_X=""` or `FICUS_X= ` next to a real TAU_X reads the TAU_
+# one); VAR receives that normalized value. Returns 1 when neither name is
+# present. For a PROTECTED suffix whose two names hold different non-empty
+# values it DIES, naming the keys only — so call it in the current shell (not
+# inside `$(...)`), where that die ends the run instead of reading as
+# "absent".
 #
 # PERMANENT: backup archives and hand-kept env files outlive the rename, so
 # this fallback is what keeps a pre-rename encryption key from ever being
 # replaced by a freshly generated key. Never remove the TAU_ fallback.
 envfile_read_prefixed() { # VAR FILE SUFFIX
-  local _erp_var=$1 _erp_file=$2 _erp_suffix=$3 _erp_raw _erp_line _erp_rest _erp_p
-  local _erp_ficus='' _erp_tau='' _erp_has_ficus=0 _erp_has_tau=0 _erp_nf _erp_nt LC_ALL=C
+  local _erp_var=$1 _erp_file=$2 _erp_suffix=$3 _erp_raw _erp_k _erp_n
+  local _erp_nf='' _erp_nt='' _erp_has_ficus=0 _erp_has_tau=0 LC_ALL=C
   [[ -f ${_erp_file} ]] || return 1
   read_file_exact "${_erp_file}" _erp_raw || die "could not read ${_erp_file}"
-  _erp_rest=${_erp_raw}
-  while [[ -n ${_erp_rest} ]]; do
-    _erp_line=${_erp_rest%%$'\n'*}
-    if [[ ${_erp_line} == "${_erp_rest}" ]]; then _erp_rest=''; else _erp_rest=${_erp_rest#*$'\n'}; fi
-    for _erp_p in FICUS TAU; do
-      if [[ ${_erp_line} == "${_erp_p}_${_erp_suffix}="* ]]; then
-        if [[ ${_erp_p} == FICUS ]]; then
-          _erp_ficus=${_erp_line#*=}
-          _erp_has_ficus=1
-        else
-          _erp_tau=${_erp_line#*=}
-          _erp_has_tau=1
-        fi
-      fi
-    done
-  done
-  if ((_erp_has_ficus && _erp_has_tau)) && _epr_protected "${_erp_suffix}"; then
-    _epr_normalize "${_erp_ficus}"
-    _erp_nf=${_EPR_OUT}
-    _epr_normalize "${_erp_tau}"
-    _erp_nt=${_EPR_OUT}
-    if [[ -n ${_erp_nf} && -n ${_erp_nt} && ${_erp_nf} != "${_erp_nt}" ]]; then
-      die "$(_epr_conflict_message "${_erp_file}" TAU FICUS "${_erp_suffix}")"
+  _epr_split_lines "${_erp_raw}"
+  _epr_parse_entries
+  _erp_n=${#_E_KEY[@]}
+  for ((_erp_k = 0; _erp_k < _erp_n; _erp_k++)); do
+    if [[ ${_E_KEY[_erp_k]} == "FICUS_${_erp_suffix}" ]]; then
+      _epr_normalize "${_E_VALUE[_erp_k]}"
+      _erp_nf=${_EPR_OUT}
+      _erp_has_ficus=1
+    elif [[ ${_E_KEY[_erp_k]} == "TAU_${_erp_suffix}" ]]; then
+      _epr_normalize "${_E_VALUE[_erp_k]}"
+      _erp_nt=${_EPR_OUT}
+      _erp_has_tau=1
     fi
+  done
+  if ((_erp_has_ficus && _erp_has_tau)) && _epr_protected "${_erp_suffix}" &&
+    [[ -n ${_erp_nf} && -n ${_erp_nt} && ${_erp_nf} != "${_erp_nt}" ]]; then
+    die "$(_epr_conflict_message "${_erp_file}" TAU FICUS "${_erp_suffix}")"
   fi
-  if ((_erp_has_ficus)) && [[ -n ${_erp_ficus} ]]; then
-    printf -v "${_erp_var}" '%s' "${_erp_ficus}"
+  if ((_erp_has_ficus)) && [[ -n ${_erp_nf} ]]; then
+    printf -v "${_erp_var}" '%s' "${_erp_nf}"
   elif ((_erp_has_tau)); then
-    printf -v "${_erp_var}" '%s' "${_erp_tau}"
+    printf -v "${_erp_var}" '%s' "${_erp_nt}"
   elif ((_erp_has_ficus)); then
     printf -v "${_erp_var}" '%s' ''
   else
@@ -4089,6 +4113,22 @@ core_release_env_prefix() { # TREE
   esac
 }
 
+# The env prefix the git revision REV of the checkout at DEST reads, from its
+# root package.json as committed — read with `git show`, so it can be asked
+# before the checkout moves (N-C2). Dies when it cannot be told.
+git_rev_env_prefix() { # DEST REV
+  local json name
+  json=$(git -C "$1" show "$2:package.json" 2>/dev/null) ||
+    die "could not read package.json at revision $2 of $1"
+  name=$(jq -r '.name // empty' <<<"${json}" 2>/dev/null) ||
+    die "package.json at revision $2 of $1 is not valid JSON"
+  case "${name}" in
+    ficus) printf 'FICUS\n' ;;
+    tau) printf 'TAU\n' ;;
+    *) die "package.json at revision $2 of $1 is named '${name}', not ficus or tau — cannot tell which env prefix it reads" ;;
+  esac
+}
+
 # The release tree the services run from: what <dest>/current resolves to
 # on the artifact layout, <dest> itself for a git checkout.
 active_release_tree() {
@@ -4109,8 +4149,8 @@ host_env_files() { # [--no-units]
   [[ ${1:-} == --no-units ]] && no_units=1
   cands+=("${SRC_DEST}/.env" "${FICUS_MANAGED_ENV_PATH}" "${BACKUP_ENV_TARGET}" "${CFG_FILE:-}")
   if ((no_units == 0)); then
-    cands+=("${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service)
-    for f in "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service.d/*.conf; do
+    cands+=("${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service) # phase5-unit-name
+    for f in "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service.d/*.conf; do # phase5-unit-name
       cands+=("${f}")
     done
   fi
@@ -4151,7 +4191,7 @@ env_rename_backup_create() { # TARGET RELEASE_DIR FILE...
   if [[ -e ${root}/PENDING ]]; then
     die "env_rename_backup_create: ${root}/PENDING already journals a rename — reconcile it first"
   fi
-  if ! mkdir -p -- "${root}" || ! chmod 0700 -- "${root}"; then
+  if ! mkdir -p -- "${root}" || ! chmod 0700 "${root}"; then
     die "env_rename_backup_create: could not create ${root} (root 0700)"
   fi
   ts=$(date -u '+%Y%m%dT%H%M%SZ') || die "env_rename_backup_create: could not read the clock"
@@ -4162,7 +4202,7 @@ env_rename_backup_create() { # TARGET RELEASE_DIR FILE...
     rm -rf -- "${setdir}"
     die "env_rename_backup_create: $* — nothing was renamed"
   }
-  chmod 0700 -- "${setdir}" || _epr_backup_fail "could not chmod ${setdir}"
+  chmod 0700 "${setdir}" || _epr_backup_fail "could not chmod ${setdir}"
   for f in "$@"; do
     idx=$((idx + 1))
     _epr_resolve "${f}" f || _epr_backup_fail "'${f}' is not an existing file"
@@ -4302,7 +4342,7 @@ env_rename_backup_restore() { # SETDIR
 # Are both core unit templates next to this toolkit copy?
 _epr_have_unit_templates() {
   local t
-  for t in "${SCRIPT_DIR}/systemd"/tau-{api,worker}.service.tmpl; do
+  for t in "${SCRIPT_DIR}/systemd"/tau-{api,worker}.service.tmpl; do # phase5-unit-name
     [[ -f ${t} ]] || return 1
   done
 }
@@ -4328,14 +4368,26 @@ env_rename_backup_prune() {
 
 # Does FILE have a line that step 8 below would rename? $2 is the kind.
 _epr_needs_rename() { # FILE dotenv|yaml|unit|backup_script
-  local rc=0 from=TAU keys
+  local rc=0 from=TAU keys raw rrc=0 LC_ALL=C
   case "$2" in
-    dotenv) grep -qE "^[[:space:]]*(export[[:space:]]+)?${from}_[A-Za-z0-9_]+=" -- "$1" || rc=$? ;;
+    dotenv | unit)
+      # Exactly what the rename would do: a TAU_ line inside a multi-line
+      # value (a PEM block) is value text, and must not make a set every run.
+      read_file_exact "$1" raw || die "could not read $1"
+      if [[ $2 == dotenv ]]; then
+        _epr_rename_content "${raw}" "${from}" FICUS || rrc=$?
+        # A protected conflict (2) is a change the rename would stop on.
+        [[ ${rrc} -eq 2 ]] && return 0
+      else
+        _epr_unit_rename_content "${raw}" "${from}" FICUS
+      fi
+      [[ ${_EPR_RESULT} != "${raw}" ]]
+      return
+      ;;
     yaml)
       keys=$(_epr_yaml_env_keys "$1") || die "could not read .core.env from $1"
       grep -q "^${from}_." <<<"${keys}" || rc=$?
       ;;
-    unit) grep -qE "^Environment=\"?${from}_" -- "$1" || rc=$? ;;
     backup_script) grep -qF "${from}_BACKUP_" -- "$1" || rc=$? ;;
   esac
   ((rc <= 1)) || die "could not read $1"
@@ -4353,7 +4405,7 @@ _env_prefix_rename_files() { # [--no-units]
     yaml_rename_env_prefix "${CFG_FILE}" TAU FICUS
   fi
   if [[ ${1:-} != --no-units ]]; then
-    for f in "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service.d/*.conf; do
+    for f in "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service.d/*.conf; do # phase5-unit-name
       [[ -e ${f} ]] || continue
       unitfile_rename_env_prefix "${f}" TAU FICUS >/dev/null || die "renaming ${f} failed"
     done
@@ -4400,15 +4452,15 @@ migrate_env_prefix_host() { # TARGET [RELEASE_DIR]
     [[ -z ${c} ]] || conflicts+="${conflicts:+; }$(_epr_conflict_message "${f}" TAU FICUS ${c})"
   done
   if [[ -n ${CFG_FILE:-} ]]; then
-    # shellcheck disable=SC2086
     c=$(yaml_prefix_conflicts "${CFG_FILE}" TAU FICUS) || die "could not check ${CFG_FILE} for conflicting settings"
+    # shellcheck disable=SC2086 # one suffix per line, split on purpose
     [[ -z ${c} ]] || conflicts+="${conflicts:+; }$(_epr_conflict_message "${CFG_FILE} .core.env" TAU FICUS ${c})"
   fi
   [[ -z ${conflicts} ]] || die "refusing to rename this host's settings: ${conflicts}"
 
   # Per file: will anything change? (No ".env is already FICUS" shortcut —
   # a half-renamed host is finished file by file.)
-  for f in "${files[@]}"; do
+  for f in ${files[@]+"${files[@]}"}; do
     kind=dotenv
     [[ ${f} == "$(readlink -f -- "${CFG_FILE:-/nonexistent}" 2>/dev/null)" ]] && kind=yaml
     [[ ${f} == *.service || ${f} == *.conf ]] && kind=unit
@@ -4430,6 +4482,7 @@ migrate_env_prefix_host() { # TARGET [RELEASE_DIR]
   log_info "renaming this host's TAU_* settings to FICUS_* (backup set ${ENV_RENAME_BACKUP_SET}; restored automatically if this run fails)"
   # shellcheck disable=SC2086 # an empty ${no_units} must vanish, not pass ''
   _env_prefix_rename_files ${no_units}
+  _epr_sync_files "${files[@]}" || die "could not flush the renamed env files to disk"
   as_root systemctl daemon-reload || die "systemctl daemon-reload failed after the env rename"
 }
 
@@ -4443,13 +4496,74 @@ migrate_env_prefix_host_for() { # RELEASE_DIR
   ensure_tau_api_memory_guardrail
 }
 
+# Flush the filesystem of each FILE (each touched filesystem once).
+_epr_sync_files() { # FILE...
+  local f seen=$'\n' d
+  for f in "$@"; do
+    d=$(dirname -- "${f}") || return 1
+    [[ ${seen} == *$'\n'"${d}"$'\n'* ]] && continue
+    seen+="${d}"$'\n'
+    _epr_sync "${f}" || return 1
+  done
+}
+
+# Remove the staging files an interrupted rename or restore left next to each
+# file of SETDIR's MANIFEST (.<name>.ficus-rename.* / .<name>.ficus-restore.*).
+_epr_clean_staging() { # SETDIR
+  local idx _sha path dir base f
+  [[ -f $1/MANIFEST ]] || return 0
+  while IFS=$'\t' read -r idx _sha path; do
+    [[ -n ${path} ]] || continue
+    dir=$(dirname -- "${path}") && base=$(basename -- "${path}") || continue
+    for f in "${dir}/.${base}.ficus-rename."* "${dir}/.${base}.ficus-restore."*; do
+      [[ -e ${f} ]] || continue
+      if rm -f -- "${f}"; then
+        log_info "removed ${f}, a staging file an interrupted run left behind"
+      fi
+    done
+  done <"$1/MANIFEST" || return 0
+}
+
+# The env prefix the ACTIVE release reads, into _EPR_ACTIVE (and its tree into
+# _EPR_ACTIVE_TREE). Returns 1 when it cannot be told.
+_epr_active_prefix() {
+  _EPR_ACTIVE='' _EPR_ACTIVE_TREE=''
+  _EPR_ACTIVE_TREE=$(active_release_tree) || return 1
+  _EPR_ACTIVE=$(core_release_env_prefix "${_EPR_ACTIVE_TREE}") || return 1
+  _epr_is_prefix "${_EPR_ACTIVE}"
+}
+
+# Finish SETDIR's rename forward — the active release reads FICUS_ — and
+# commit. Contained: on any failure it returns 1 with the journal kept, so the
+# next toolkit run's reconcile finishes the job.
+_env_prefix_finish_forward() { # SETDIR
+  local setdir=$1 no_units='' listing f
+  local -a files=()
+  _epr_clean_staging "${setdir}"
+  [[ -e ${setdir}/UNITS_EXCLUDED ]] && no_units=--no-units
+  # shellcheck disable=SC2086 # an empty ${no_units} must vanish, not pass ''
+  if ! (
+    _env_prefix_rename_files ${no_units} || exit 1
+    listing=$(host_env_files ${no_units}) || exit 1
+    while IFS= read -r f; do
+      [[ -n ${f} ]] && files+=("${f}")
+    done <<<"${listing}"
+    _epr_sync_files ${files[@]+"${files[@]}"} || exit 1
+    as_root systemctl daemon-reload || exit 1
+  ); then
+    return 1
+  fi
+  ENV_RENAME_BACKUP_SET=${setdir}
+  env_prefix_commit
+}
+
 # Make a journaled rename match the ACTIVE release (N-C1): restore the set
 # when the release that is serving reads TAU_, finish the rename file by file
 # and commit when it reads FICUS_. No journal: nothing to do. Returns 3 (the
 # journal kept) when this toolkit copy cannot finish the job here — the units
 # or tau-backup.sh template are not next to it.
 env_prefix_reconcile() {
-  local root raw line setdir target release tree active rc=0
+  local root raw line setdir target release rc=0
   root=$(env_rename_backup_root)
   [[ -e ${root}/PENDING ]] || return 0
   read_file_exact "${root}/PENDING" raw || die "could not read ${root}/PENDING"
@@ -4461,13 +4575,15 @@ env_prefix_reconcile() {
   if [[ ${setdir} != "${root}/"* || ! -f ${setdir}/MANIFEST ]]; then
     die "${root}/PENDING names '${setdir}', which is not a backup set under ${root} — inspect it by hand before re-running"
   fi
-  tree=$(active_release_tree) || die "could not resolve the active release under ${SRC_DEST}"
-  active=$(core_release_env_prefix "${tree}") || die "could not tell which env prefix the active release (${tree}) reads"
-  log_warn "found a journaled env rename (set ${setdir}, target ${target}, release ${release:-<none>}) from an interrupted run; the active release ${tree} reads ${active}_*"
-  if [[ ${active} == TAU ]]; then
+  _epr_active_prefix || die "could not tell which env prefix the active release (${_EPR_ACTIVE_TREE:-under ${SRC_DEST}}) reads"
+  log_warn "found a journaled env rename (set ${setdir}, target ${target}, release ${release:-<none>}) from an interrupted run; the active release ${_EPR_ACTIVE_TREE} reads ${_EPR_ACTIVE}_*"
+  if [[ ${_EPR_ACTIVE} == TAU ]]; then
     env_rename_backup_restore "${setdir}" || rc=$?
     case ${rc} in
-      0) log_info "reconcile: restored ${setdir} (the active release reads TAU_*)" ;;
+      0)
+        _epr_clean_staging "${setdir}"
+        log_info "reconcile: restored ${setdir} (the active release reads TAU_*)"
+        ;;
       3) return 3 ;;
       *) die "reconcile: restoring ${setdir} failed — the journal is kept; inspect ${setdir}/MANIFEST before re-running" ;;
     esac
@@ -4478,35 +4594,53 @@ env_prefix_reconcile() {
     log_warn "reconcile: ${BACKUP_SCRIPT_PATH} still reads the pre-rename backup settings and tau-backup.sh.tmpl is not next to this script — leaving the rename journaled for the next upgrade"
     return 3
   fi
-  if [[ -e ${setdir}/UNITS_EXCLUDED ]]; then
-    _env_prefix_rename_files --no-units
-  else
-    _env_prefix_rename_files
-  fi
-  as_root systemctl daemon-reload || die "systemctl daemon-reload failed while finishing the env rename"
-  ENV_RENAME_BACKUP_SET=${setdir}
-  env_prefix_commit
+  _env_prefix_finish_forward "${setdir}" ||
+    die "reconcile: finishing the rename journaled in ${setdir} failed — the journal is kept; re-run"
   log_info "reconcile: finished the rename journaled in ${setdir} (the active release reads FICUS_*)"
 }
 
-# Put the pending set back (once) if this run renamed and has not committed.
-env_prefix_restore_pending() {
+# Settle THIS run's pending rename after a failure or a signal (Ruling 29): the
+# env files must end up matching the ACTIVE release. When the release serving
+# now reads TAU_ (the flip never happened, or was rolled back), the set is
+# restored; when it reads FICUS_ (the failure came after the flip, or there
+# was nothing to roll back to), the rename is finished forward and committed.
+# When that cannot be told, or either step fails, the journal is kept and the
+# next toolkit run's reconcile settles it. Runs once (the flag is cleared
+# first): the TERM trap runs it, and then the EXIT trap does again.
+env_prefix_settle_pending() {
   local rc=0
   [[ ${ENV_RENAME_PENDING:-0} -eq 1 ]] || return 0
   ENV_RENAME_PENDING=0
-  log_warn "restoring this host's env files from ${ENV_RENAME_BACKUP_SET} (the run that renamed them did not complete)"
-  env_rename_backup_restore "${ENV_RENAME_BACKUP_SET}" || rc=$?
-  if [[ ${rc} -ne 0 ]]; then
-    log_error "the env restore from ${ENV_RENAME_BACKUP_SET} did not complete (rc ${rc}) — $(env_rename_backup_root)/PENDING is kept, and the next toolkit run reconciles it"
+  if ! _epr_active_prefix; then
+    log_error "cannot tell which env prefix the active release reads — $(env_rename_backup_root)/PENDING is kept, and the next toolkit run reconciles it"
+    return 1
   fi
-  return "${rc}"
+  if [[ ${_EPR_ACTIVE} == TAU ]]; then
+    log_warn "restoring this host's env files from ${ENV_RENAME_BACKUP_SET} (the run that renamed them did not complete, and the active release reads TAU_*)"
+    env_rename_backup_restore "${ENV_RENAME_BACKUP_SET}" || rc=$?
+    if [[ ${rc} -ne 0 ]]; then
+      log_error "the env restore from ${ENV_RENAME_BACKUP_SET} did not complete (rc ${rc}) — $(env_rename_backup_root)/PENDING is kept, and the next toolkit run reconciles it"
+    fi
+    return "${rc}"
+  fi
+  log_warn "the active release ${_EPR_ACTIVE_TREE} reads FICUS_*: keeping this host's renamed env files and committing the rename (set ${ENV_RENAME_BACKUP_SET})"
+  if ! _env_prefix_finish_forward "${ENV_RENAME_BACKUP_SET}"; then
+    log_error "finishing the env rename forward did not complete — $(env_rename_backup_root)/PENDING is kept, and the next toolkit run reconciles it"
+    return 1
+  fi
 }
 
-# The EXIT/TERM/HUP/INT trap body: restore on any failed or signalled exit.
+# artifact_activate's rollback hook: it runs after the symlinks are swapped
+# back, so the active release is the old one again and this restores.
+env_prefix_restore_pending() {
+  env_prefix_settle_pending
+}
+
+# The EXIT/TERM/HUP/INT trap body: settle on any failed or signalled exit.
 # Idempotent — a TERM trap runs it, and then the EXIT trap does again.
 env_prefix_on_exit() { # RC
   [[ ${1:-0} -ne 0 ]] || return 0
-  env_prefix_restore_pending || true
+  env_prefix_settle_pending || true
 }
 
 # The renamed files are now what the serving release reads: forget the
@@ -4536,10 +4670,34 @@ toolkit_exit_trap() { # RC
 # 128+N status, which the EXIT trap then sees too (a no-op the second time).
 env_prefix_install_traps() {
   TOOLKIT_EXIT_TRAP_INSTALLED=1
+  # A dropped SSH session closes the pipes the log lines go to. Without this
+  # the next write kills the script with an untrapped SIGPIPE — before any
+  # trap could settle a pending rename. Ignored, the write just fails (the
+  # log_* helpers tolerate that) and the run ends through its own checks.
+  trap '' PIPE
   trap 'toolkit_exit_trap $?' EXIT
   trap 'env_prefix_on_exit 143; exit 143' TERM
   trap 'env_prefix_on_exit 129; exit 129' HUP
   trap 'env_prefix_on_exit 130; exit 130' INT
+}
+
+# Serialize the toolkit runs that can rename, restore or reconcile a host's
+# env files: an exclusive flock on ${ENV_RENAME_BACKUP_ROOT}/.lock, held on
+# fd 9 until this process (and its children) exit. Waits up to
+# ENV_RENAME_LOCK_WAIT seconds (default 900) for another run, then dies.
+env_prefix_lock() {
+  local root
+  root=$(env_rename_backup_root)
+  if ! have flock; then
+    log_warn "flock is not installed — toolkit runs on this host are not serialized"
+    return 0
+  fi
+  if ! mkdir -p -- "${root}" || ! chmod 0700 "${root}"; then
+    die "could not create ${root} (root 0700)"
+  fi
+  exec 9>>"${root}/.lock" || die "could not open ${root}/.lock"
+  flock -w "${ENV_RENAME_LOCK_WAIT:-900}" 9 ||
+    die "another toolkit run on this host holds ${root}/.lock (an upgrade, setup or artifact sync) — wait for it to finish and re-run"
 }
 
 # Refuse to run a FICUS_-only primitive on a host that was never renamed

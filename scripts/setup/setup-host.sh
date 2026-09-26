@@ -532,6 +532,8 @@ resolve_secrets() {
 # installs the traps that restore THIS run's rename (just before phase_env)
 # if the run fails or is signalled. A dry run changes nothing, so neither.
 if [[ ${DRY_RUN} -eq 0 ]]; then
+  # One toolkit run at a time may rename, restore or reconcile this host.
+  env_prefix_lock
   reconcile_rc=0
   env_prefix_reconcile || reconcile_rc=$?
   [[ ${reconcile_rc} -eq 0 ]] ||
