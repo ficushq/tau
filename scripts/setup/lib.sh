@@ -442,6 +442,11 @@ require_env_file_sandbox_runtime() { # ENV_FILE
   local file=$1 value='' hint=''
   [[ -f ${file} ]] ||
     die "FICUS_SANDBOX_RUNTIME preflight: env file '${file}' not found — the services read it at startup, so an upgrade cannot verify what they would come back as"
+  # A non-root (sudo) run that cannot read it cannot check anything in it —
+  # this, or whether it still uses TAU_ names a Ficus release needs renamed
+  # (Ruling 31: fail closed). Name the file, never its contents.
+  [[ -r ${file} ]] ||
+    die "cannot read ${file} as $(id -un) (uid ${EUID}), so this non-root run cannot check it (its sandbox runtime, or TAU_ names the Ficus Core release needs renamed — the rename is root-only) — re-run this as root"
   envfile_read_prefixed value "${file}" SANDBOX_RUNTIME || value=''
   # Tolerate `KEY="value"` / `KEY='value'` and stray whitespace: systemd's
   # EnvironmentFile strips the quotes, so those are the same setting.
@@ -4149,25 +4154,30 @@ active_release_tree() {
 # symlinks, one per line, deduplicated. --no-units leaves out the core units
 # and their drop-ins (a git->artifact conversion in the same run re-renders
 # them; see env_rename_backup_restore).
-host_env_files() { # [--no-units]
-  local no_units=0 f resolved seen=$'\n'
-  local -a cands=()
-  [[ ${1:-} == --no-units ]] && no_units=1
-  cands+=("${SRC_DEST}/.env" "${FICUS_MANAGED_ENV_PATH}" "${BACKUP_ENV_TARGET}" "${CFG_FILE:-}")
-  if ((no_units == 0)); then
-    cands+=("${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service) # phase5-unit-name
+# Every path host_env_files considers, unresolved and unfiltered (an
+# unmatched drop-in glob stays literal): one per line.
+_host_env_candidates() { # [--no-units]
+  local f
+  printf '%s\n' "${SRC_DEST}/.env" "${FICUS_MANAGED_ENV_PATH}" "${BACKUP_ENV_TARGET}" "${CFG_FILE:-}"
+  if [[ ${1:-} != --no-units ]]; then
+    printf '%s\n' "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service # phase5-unit-name
     for f in "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service.d/*.conf; do # phase5-unit-name
-      cands+=("${f}")
+      printf '%s\n' "${f}"
     done
   fi
-  cands+=("${BACKUP_SCRIPT_PATH}")
-  for f in "${cands[@]}"; do
+  printf '%s\n' "${BACKUP_SCRIPT_PATH}"
+}
+
+host_env_files() { # [--no-units]
+  local f resolved seen=$'\n' listing
+  listing=$(_host_env_candidates "$@") || return 1
+  while IFS= read -r f; do
     [[ -n ${f} ]] || continue
     _epr_resolve "${f}" resolved || continue
     [[ ${seen} == *$'\n'"${resolved}"$'\n'* ]] && continue
     seen+="${resolved}"$'\n'
     printf '%s\n' "${resolved}"
-  done
+  done <<<"${listing}"
 }
 
 # Flush FILE's filesystem to disk (GNU `sync -f`; plain `sync` elsewhere).
@@ -4447,7 +4457,7 @@ migrate_env_prefix_host() { # TARGET [RELEASE_DIR]
   fi
   if ! _epr_is_root; then
     require_env_rename_privilege FICUS
-    log_info "env prefix: nothing this (non-root) run can read needs renaming"
+    log_info "env prefix: every host env file is readable and none needs renaming (non-root run)"
     return 0
   fi
   [[ ${ARTIFACT_CONVERTED_THIS_RUN:-0} -eq 1 ]] && no_units=--no-units
@@ -4727,13 +4737,32 @@ env_prefix_lock() {
 }
 
 # Controller Ruling 30: refuse, early and with the reason, a NON-ROOT run that
-# would have to rename this host's settings to TARGET. Only the files this
-# user can read are looked at (the rest are root-owned; a root run renames
-# them). A root run, a TAU target, or nothing to rename: returns 0.
+# would have to rename this host's settings to TARGET. Ruling 31: fail closed
+# — a host env file this user cannot read (or cannot even tell exists,
+# behind a directory it cannot search or list) might need the rename, so it
+# refuses too, naming the path and never reading anything from it. A root
+# run, a TAU target, or every file readable with nothing to rename: 0.
 require_env_rename_privilege() { # TARGET
-  local listing f kind
+  local listing f kind anc
   _epr_is_root && return 0
   [[ $1 == FICUS ]] || return 0
+  listing=$(_host_env_candidates) || die "could not list this host's env files"
+  while IFS= read -r f; do
+    [[ -n ${f} ]] || continue
+    if [[ -e ${f} ]]; then
+      [[ -r ${f} ]] ||
+        die "cannot read ${f} as $(id -un) (uid ${EUID}), so this non-root run cannot tell whether it still uses TAU_ names the Ficus Core release needs renamed (the rename is root-only) — re-run this as root"
+      continue
+    fi
+    # Absent, or hidden: walk up to the nearest ancestor that is visible.
+    anc=$(dirname -- "${f}")
+    while [[ ! -e ${anc} && ${anc} != / && ${anc} != . ]]; do
+      anc=$(dirname -- "${anc}")
+    done
+    if [[ -d ${anc} && ! -x ${anc} ]] || { [[ ${f} == *'*'* && ${anc} == "$(dirname -- "${f}")" && -d ${anc} && ! -r ${anc} ]]; }; then
+      die "cannot tell whether ${f} exists: ${anc} cannot be searched (or listed) by $(id -un) (uid ${EUID}), so this non-root run cannot check it for TAU_ names the Ficus Core release needs renamed (the rename is root-only) — re-run this as root"
+    fi
+  done <<<"${listing}"
   listing=$(host_env_files) || die "could not list this host's env files"
   while IFS= read -r f; do
     [[ -n ${f} && -r ${f} ]] || continue

@@ -117,7 +117,13 @@ needs no rename, restore or reconcile — a `TAU_*` host staying on a
 pre-rename release, or a host already on `FICUS_*`. When the run would have to
 rename `TAU_*` → `FICUS_*`, finish a journaled rename, or restore a set
 (`--restore-env-backup`), it stops before changing anything and says so:
-re-run it as root.
+re-run it as root. It also fails closed: onto a Ficus release, a non-root run
+that cannot read one of the host's env files (`.env`, `managed.env`,
+`backup.env`, the config, the core units and drop-ins, `tau-backup.sh`) — or
+cannot even tell whether one exists — refuses, naming the file (never its
+contents), because it cannot check it for `TAU_*` names. A host whose
+`backup.env` is root-only 0600 therefore upgrades onto a Ficus release as
+root.
 
 Do NOT hand-roll this sequence. `tau-api` runs `bun run dist/index.js`, so a
 fetch without the core build leaves the OLD server running while `git log` on

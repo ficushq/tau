@@ -237,6 +237,20 @@ expect_match 'require_env_file_sandbox_runtime: an absent env file is fatal, not
 ( require_env_file_sandbox_runtime "${RSR_ENV_TMP}/auto.env" ) >/dev/null 2>&1 || true
 expect_eq 'require_env_file_sandbox_runtime never rewrites the env file' \
   "$(cat "${RSR_ENV_TMP}/auto.env")" 'FICUS_SANDBOX_RUNTIME=auto'
+# Ruling 31: an .env this (non-root) run cannot read is refused by name —
+# re-run as root — never read, and never mistaken for "no runtime set".
+if [[ ${EUID} -ne 0 ]]; then
+  printf 'FICUS_SANDBOX_RUNTIME=vm\nSECRET=rsr-sekrit\n' >"${RSR_ENV_TMP}/locked.env"
+  chmod 0000 "${RSR_ENV_TMP}/locked.env"
+  rsr_locked=$( (require_env_file_sandbox_runtime "${RSR_ENV_TMP}/locked.env") 2>&1; echo "rc=$?")
+  expect_match 'require_env_file_sandbox_runtime: an unreadable .env names the file, re-run as root' \
+    "${rsr_locked}" "cannot read ${RSR_ENV_TMP}/locked\.env as .*re-run this as root.*rc=1"
+  expect_eq 'require_env_file_sandbox_runtime: an unreadable .env leaks none of its contents' \
+    "$(printf '%s' "${rsr_locked}" | grep -c 'rsr-sekrit' || true)" '0'
+  chmod 0600 "${RSR_ENV_TMP}/locked.env"
+else
+  printf 'SKIP: require_env_file_sandbox_runtime unreadable-.env refusal (root ignores mode 000; covered by the unprivileged run)\n' >&2
+fi
 rm -rf "${RSR_ENV_TMP}"
 
 # The upgrade primitive has to actually CALL it — a check nothing runs is not a
@@ -6013,6 +6027,54 @@ expect_match 'non-root, a pending reconcile: refuses — root-only' \
   "$( (_epr_is_root() { return 1; }; env_prefix_reconcile) 2>&1; echo "rc=$?")" 'reconciling it is root-only.*re-run this as root.*rc=1'
 rm -rf "${ENV_RENAME_BACKUP_ROOT}"
 expect_eq 'non-root, nothing journaled: the reconcile is a no-op' "$( (_epr_is_root() { return 1; }; env_prefix_reconcile) 2>&1; echo "rc=$?")" 'rc=0'
+
+# --- Ruling 31: a non-root run fails CLOSED on a host env file it cannot read -
+# Mode 000 stands in for "root-owned 0600" (the e2e suite has the real sudo
+# case); root ignores mode bits, so only a non-root pass can run these.
+if [[ ${EUID} -ne 0 ]]; then
+  epr_host nonroot-unreadable '{"name":"ficus"}'
+  printf 'TAU_ENCRYPTION_KEY=sekrit-value-31\nOTHER=1\n' >"${SRC_DEST}/.env" # legacy-env
+  chmod 0000 "${SRC_DEST}/.env"
+  epr_out=$( (_epr_is_root() { return 1; }; require_env_rename_privilege FICUS) 2>&1; echo "rc=$?")
+  expect_match 'non-root, an unreadable TAU_ .env: refuses — names the file, re-run as root' \
+    "${epr_out}" "cannot read ${SRC_DEST}/\.env as .*re-run this as root.*rc=1"
+  expect_eq 'non-root, an unreadable .env: the refusal carries none of its contents' \
+    "$(printf '%s' "${epr_out}" | grep -c 'sekrit-value-31' || true)" '0'
+  expect_match 'non-root, an unreadable .env: migrate refuses the same way' \
+    "$( (_epr_is_root() { return 1; }; migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel") 2>&1; echo "rc=$?")" "cannot read ${SRC_DEST}/\.env.*rc=1"
+  chmod 0600 "${SRC_DEST}/.env"
+  expect_eq 'non-root, an unreadable .env: nothing written, no set' \
+    "$(grep -c '^TAU_ENCRYPTION_KEY=sekrit-value-31$' "${SRC_DEST}/.env"):$([[ -d ${ENV_RENAME_BACKUP_ROOT} ]] && echo set || echo none)" '1:none' # legacy-env
+  # The same host with the .env readable: refused exactly as before (Ruling 30).
+  expect_match 'non-root, the same .env readable: the Ruling 30 refusal, unchanged' \
+    "$( (_epr_is_root() { return 1; }; require_env_rename_privilege FICUS) 2>&1; echo "rc=$?")" 'must be renamed TAU_\* -> FICUS_\*.*rc=1'
+  # Fail closed even when the unreadable file is (in fact) already FICUS_.
+  for epr_f in "${SRC_DEST}/.env" "${FICUS_MANAGED_ENV_PATH}"; do envfile_rename_prefix "${epr_f}" TAU FICUS >/dev/null 2>&1; done
+  for epr_f in "$(epr_unit api)" "$(epr_unit worker)" "$(epr_unit api).d/extra.conf"; do unitfile_rename_env_prefix "${epr_f}" TAU FICUS >/dev/null 2>&1; done
+  expect_eq 'non-root, every file readable and renamed: proceeds exactly as before' \
+    "$( (_epr_is_root() { return 1; }; require_env_rename_privilege FICUS) 2>&1; echo "rc=$?")" 'rc=0'
+  chmod 0000 "${FICUS_MANAGED_ENV_PATH}"
+  expect_match 'non-root, an unreadable FICUS_ managed.env: still refuses (fail closed)' \
+    "$( (_epr_is_root() { return 1; }; require_env_rename_privilege FICUS) 2>&1; echo "rc=$?")" "cannot read ${FICUS_MANAGED_ENV_PATH}.*rc=1"
+  chmod 0600 "${FICUS_MANAGED_ENV_PATH}"
+  # A directory it cannot search: whether the file exists cannot be told.
+  chmod 0000 "${EPR_H}/etc"
+  expect_match 'non-root, an unsearchable env-file directory: refuses — cannot tell whether it exists' \
+    "$( (_epr_is_root() { return 1; }; require_env_rename_privilege FICUS) 2>&1; echo "rc=$?")" "cannot tell whether ${EPR_H}/etc/[a-z.]+ exists: ${EPR_H}/etc cannot be searched.*re-run this as root.*rc=1"
+  chmod 0755 "${EPR_H}/etc"
+  # A drop-in directory it cannot list.
+  chmod 0100 "$(epr_unit api).d"
+  expect_match 'non-root, a drop-in directory it cannot list: refuses' \
+    "$( (_epr_is_root() { return 1; }; require_env_rename_privilege FICUS) 2>&1; echo "rc=$?")" 'cannot tell whether .*tau-api\.service\.d/\*\.conf exists.*rc=1'
+  chmod 0755 "$(epr_unit api).d"
+  # Root runs and TAU targets are unaffected.
+  chmod 0000 "${SRC_DEST}/.env"
+  expect_eq 'Ruling 31: a root run is not refused here' "$( (_epr_is_root() { return 0; }; require_env_rename_privilege FICUS) 2>&1; echo "rc=$?")" 'rc=0'
+  expect_eq 'Ruling 31: a TAU target is not refused here' "$( (_epr_is_root() { return 1; }; require_env_rename_privilege TAU) 2>&1; echo "rc=$?")" 'rc=0'
+  chmod 0600 "${SRC_DEST}/.env"
+else
+  printf 'SKIP: Ruling 31 unreadable-file refusals (root ignores mode 000; covered by the unprivileged run and the e2e sudo case)\n' >&2
+fi
 
 # --- M12: git mode reads the TARGET's package.json before the checkout moves --
 if have git; then

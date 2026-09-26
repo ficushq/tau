@@ -791,6 +791,45 @@ if [[ -n ${SUDO_USER_T} ]] && id -u "${SUDO_USER_T}" >/dev/null 2>&1 &&
     "$(same_as "${H}/pristine"):$([[ -e ${H}/bk ]] && echo created || echo none):$(readlink "${DEST}/current")" "same:none:${OLD_REL}"
   expect_eq 'non-root (sudo) upgrade that needs the rename: nothing was restarted' "$(grep -c 'systemctl restart' "${CALLS}" || true)" '0'
 
+  # Ruling 31: the same TAU host, but its .env is root-owned 0600 (the rest
+  # is the operator's): the run cannot read it, so it fails closed — early,
+  # naming the file and never its contents.
+  new_host sudo-unreadable
+  printf '%s-*\n' "${SHA_NEW}" >>"${CTL}/healthy"
+  give_host_to "${SUDO_USER_T}"
+  chown root:root "${DEST}/.env"
+  chmod 0600 "${DEST}/.env"
+  run_script_as "${SUDO_USER_T}" "${SCRATCH}/ficus.artifact.env" upgrade-host.sh --config "${CONFIG}"
+  expect_eq 'non-root (sudo), a root-owned 0600 TAU_ .env: refused' "${RC}" '1'
+  expect_match 'non-root (sudo), a root-owned 0600 .env: names the file, re-run as root' "${OUT}" "cannot read ${DEST}/\.env as ${SUDO_USER_T} .*re-run this as root"
+  expect_eq 'non-root (sudo), a root-owned 0600 .env: none of its contents are printed' "$(printf '%s' "${OUT}" | grep -c 'enc-key-1\|pw-1' || true)" '0'
+  expect_eq 'non-root (sudo), a root-owned 0600 .env: nothing written, no set, the old release still active, nothing restarted' \
+    "$(same_as "${H}/pristine"):$([[ -e ${H}/bk ]] && echo created || echo none):$(readlink "${DEST}/current"):$(grep -c 'systemctl restart' "${CALLS}" || true)" "same:none:${OLD_REL}:0"
+  expect_eq 'non-root (sudo), a root-owned 0600 .env: no migration ran' "$([[ -e ${H}/migrate-proof ]] && echo ran || echo none)" 'none'
+
+  # ...and past the preflight: an already renamed host whose backup.env is
+  # root-owned 0600. Only the privilege check (once the target is known, before
+  # any migration) can tell it might need renaming: it fails closed too.
+  new_host sudo-bk-unreadable
+  printf '%s-*\n' "${SHA_NEW}" >>"${CTL}/healthy"
+  upgrade "${SCRATCH}/ficus.artifact.env"
+  expect_eq 'non-root fixture (backup.env): the host is renamed (as root)' "${RC}:$(tau_names)" '0:0'
+  give_host_to "${SUDO_USER_T}"
+  chown root:root "${H}/etc/backup.env"
+  chmod 0600 "${H}/etc/backup.env"
+  rm -rf "${H:?}/bk"
+  snapshot "${H}/before-nonroot"
+  cur_before=$(readlink "${DEST}/current")
+  proof_before=$(wc -l <"${H}/migrate-proof")
+  : >"${CALLS}"
+  run_script_as "${SUDO_USER_T}" "${SCRATCH}/ficus.artifact.env" upgrade-host.sh --config "${CONFIG}"
+  expect_eq 'non-root (sudo), a root-owned 0600 backup.env: refused' "${RC}" '1'
+  expect_match 'non-root (sudo), a root-owned 0600 backup.env: names it, re-run as root' "${OUT}" "cannot read ${H}/etc/backup\.env as ${SUDO_USER_T} .*re-run this as root"
+  expect_eq 'non-root (sudo), a root-owned 0600 backup.env: none of its contents are printed' "$(printf '%s' "${OUT}" | grep -c "'sk'\|'pp'" || true)" '0'
+  expect_eq 'non-root (sudo), a root-owned 0600 backup.env: no migration, nothing written or restarted, current unmoved' \
+    "$(wc -l <"${H}/migrate-proof"):$(same_as "${H}/before-nonroot"):$([[ -e ${H}/bk ]] && echo created || echo none):$(grep -c 'systemctl restart' "${CALLS}" || true):$(readlink "${DEST}/current")" \
+    "${proof_before}:same:none:0:${cur_before}"
+
   # --restore-env-backup is root-only.
   run_script_as "${SUDO_USER_T}" '' upgrade-host.sh --config "${CONFIG}" --restore-env-backup "${H}/nope"
   expect_eq 'non-root (sudo) --restore-env-backup: refused' "${RC}" '1'
