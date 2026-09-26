@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { isTransportError, runOfflineUpdate, type OfflineUpdateArgs } from './offline-update'
@@ -185,6 +185,82 @@ describe('runOfflineUpdate', () => {
       /update:offline/
     )
     expect(rec.calls.some((c) => c.command[1] === 'pm2')).toBe(false)
+  })
+
+  describe('a local install whose .env predates the Ficus rename', () => {
+    const legacy = 'TAU_SANDBOX_RUNTIME=host\nTAU_PASSWORD=real-password\n'
+    const renamed = 'FICUS_SANDBOX_RUNTIME=host\nFICUS_PASSWORD=real-password\n'
+    let root: string
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'ficus-offline-env-'))
+      // The package name after the pull decides: a Ficus checkout reads FICUS_.
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'ficus' }))
+      writeFileSync(join(root, '.env'), legacy)
+    })
+    afterEach(() => rmSync(root, { recursive: true, force: true }))
+    const backups = () => readdirSync(root).filter((name) => name.includes('.pre-ficus-'))
+    /** Records what .env said when the checkout update and the first restart ran. */
+    function watching(responses: Record<string, { code?: number; stdout?: string }> = {}) {
+      const rec = recordingRunner({ ...base, ...responses })
+      const seen: Record<string, string> = {}
+      const runner: Runner = async (command, options) => {
+        const key = command.join(' ').startsWith('bun run update:offline')
+          ? 'update'
+          : command[1] === 'pm2'
+            ? 'restart'
+            : ''
+        if (key && seen[key] === undefined) seen[key] = readFileSync(join(root, '.env'), 'utf8')
+        return rec.runner(command, options)
+      }
+      return { runner, seen, calls: rec.calls }
+    }
+
+    it('is renamed after the checkout update succeeds and before the restart, with a backup', async () => {
+      const { runner, seen } = watching()
+      const logs: string[] = []
+      await runTestOfflineUpdate({ root, runner, log: (line) => logs.push(line) })
+      // The build and migration run on the untouched file; the restart reads the renamed one.
+      expect(seen.update).toBe(legacy)
+      expect(seen.restart).toBe(renamed)
+      expect(backups()).toHaveLength(1)
+      expect(readFileSync(join(root, backups()[0]), 'utf8')).toBe(legacy)
+      expect(logs).toContain(`Renamed TAU_ settings to FICUS_ in .env (backup: ${backups()[0]})`)
+    })
+    it('is left alone when the checkout update fails', async () => {
+      const { runner } = watching({ 'bun run update:offline': { code: 1 } })
+      await expect(runTestOfflineUpdate({ root, runner, log: () => {} })).rejects.toThrow(/update:offline/)
+      expect(readFileSync(join(root, '.env'), 'utf8')).toBe(legacy)
+      expect(backups()).toEqual([])
+    })
+    it('is left alone when the updated checkout still predates the rename', async () => {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'tau' }))
+      const { runner, calls } = watching()
+      await runTestOfflineUpdate({ root, runner, log: () => {} })
+      expect(calls.some((c) => c.command[1] === 'pm2')).toBe(true)
+      expect(readFileSync(join(root, '.env'), 'utf8')).toBe(legacy)
+      expect(backups()).toEqual([])
+    })
+    it('stops a conflicting password before pulling, building or restarting anything', async () => {
+      const conflicting = 'TAU_PASSWORD=first-secret\nFICUS_PASSWORD=second-secret\n'
+      writeFileSync(join(root, '.env'), conflicting)
+      const { runner, calls } = watching()
+      const error = (await runTestOfflineUpdate({ root, runner, log: () => {} }).catch((e: unknown) => e)) as Error
+      expect(error.message).toContain('TAU_PASSWORD')
+      expect(error.message).toContain('remove the wrong value, then re-run')
+      expect(error.message).not.toContain('first-secret')
+      expect(error.message).not.toContain('second-secret')
+      expect(calls.map((c) => c.command.join(' '))).toEqual([])
+      expect(readFileSync(join(root, '.env'), 'utf8')).toBe(conflicting)
+      expect(backups()).toEqual([])
+    })
+    it('stops a conflicting password before pulling even while the checkout still predates the rename', async () => {
+      // R6: the pull is what moves the checkout onto code that renames.
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'tau' }))
+      writeFileSync(join(root, '.env'), 'TAU_PASSWORD=first-secret\nFICUS_PASSWORD=second-secret\n')
+      const { runner, calls } = watching()
+      await expect(runTestOfflineUpdate({ root, runner, log: () => {} })).rejects.toThrow('TAU_PASSWORD')
+      expect(calls).toEqual([])
+    })
   })
 })
 

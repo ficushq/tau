@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -29,7 +30,7 @@ let root: string
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'tau-setup-')))
   mkdirSync(join(root, '.git'))
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'tau' }))
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'ficus' }))
   writeFileSync(join(root, '.bun-version'), '1.3.8\n')
   writeFileSync(
     join(root, '.env.example'),
@@ -146,6 +147,42 @@ describe('runSetup', () => {
     expect(result.handoff.join('\n')).toContain('passkey')
     expect(result.handoff.join('\n')).toContain('http://localhost:3000/#setup=bootstrap-token')
     expect(lines.some((l) => l.includes('Preflight'))).toBe(true)
+  })
+  it('renames a pre-rename .env before writing it, so a re-run keeps the real password and key', async () => {
+    const legacy = `TAU_ENCRYPTION_KEY=${'cd'.repeat(32)}\nTAU_PASSWORD=real-password\nTAU_SANDBOX_RUNTIME=host\n`
+    writeFileSync(join(root, '.env'), legacy)
+    const { d } = deps()
+    const result = await runSetup(opts(), d)
+    const env = readFileSync(join(root, '.env'), 'utf8')
+    expect(env).not.toMatch(/^TAU_/m)
+    expect(env.match(/^FICUS_PASSWORD=.*$/gm)).toEqual(['FICUS_PASSWORD=real-password'])
+    expect(env.match(/^FICUS_ENCRYPTION_KEY=.*$/gm)).toEqual([`FICUS_ENCRYPTION_KEY=${'cd'.repeat(32)}`])
+    expect(result.handoff.join('\n')).toContain('#setup=real-password')
+    const backups = readdirSync(root).filter((name) => name.startsWith('.env.pre-ficus-'))
+    expect(backups.map((name) => readFileSync(join(root, name), 'utf8'))).toEqual([legacy])
+  })
+  it('stops on a conflicting encryption key before any command runs or any file changes', async () => {
+    const conflicting = 'TAU_ENCRYPTION_KEY=key-one\nFICUS_ENCRYPTION_KEY=key-two\n'
+    writeFileSync(join(root, '.env'), conflicting)
+    const { d, calls } = deps()
+    const error = (await runSetup(opts(), d).catch((e: unknown) => e)) as Error
+    expect(error.message).toContain('TAU_ENCRYPTION_KEY')
+    expect(error.message).toContain('remove the wrong value, then re-run')
+    expect(error.message).not.toContain('key-one')
+    expect(error.message).not.toContain('key-two')
+    expect(readFileSync(join(root, '.env'), 'utf8')).toBe(conflicting)
+    expect(readdirSync(root).some((name) => name.includes('.pre-ficus-'))).toBe(false)
+    expect(calls).toEqual([])
+  })
+  it('refuses a checkout that predates the Ficus rename before preflight or any mutation', async () => {
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'tau' }))
+    writeFileSync(join(root, '.env'), 'TAU_PASSWORD=real-password\n')
+    const { d, calls } = deps()
+    await expect(runSetup(opts(), d)).rejects.toThrow(
+      `${root} predates the Ficus rename (its package.json is named "tau"): update it first (git pull), or run its own \`bun run setup\``
+    )
+    expect(calls).toEqual([])
+    expect(readFileSync(join(root, '.env'), 'utf8')).toBe('TAU_PASSWORD=real-password\n')
   })
   it('keeps an existing encryption key on re-run', async () => {
     writeFileSync(join(root, '.env'), 'FICUS_ENCRYPTION_KEY=keep-me\n')

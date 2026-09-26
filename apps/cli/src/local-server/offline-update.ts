@@ -1,3 +1,4 @@
+import { assertCheckoutEnvRenamable, migrateCheckoutEnv } from './env-prefix'
 import { restartSupervisor, type SupervisorContext } from './supervisor'
 import type { Runner } from './runner'
 
@@ -58,6 +59,9 @@ export interface OfflineUpdateArgs {
  */
 export async function runOfflineUpdate(args: OfflineUpdateArgs): Promise<{ before: string; after: string }> {
   const { root, runner, log } = args
+  // A TAU_/FICUS_ secret conflict would stop the rename below after the pull and the build:
+  // refuse it now, while the checkout is still where it was.
+  assertCheckoutEnvRenamable(root)
   const runGit = (argv: string[]) => runner(['git', ...argv], { cwd: root })
   const git = async (argv: string[]) => {
     const r = await runGit(argv)
@@ -129,6 +133,11 @@ export async function runOfflineUpdate(args: OfflineUpdateArgs): Promise<{ befor
     env: { FICUS_UPDATE_SUPERVISOR: args.context.supervisor, TAU_UPDATE_SUPERVISOR: args.context.supervisor },
   })
   if (update.code !== 0) throw new Error(`bun run update:offline exited with ${update.code}`)
+
+  // Ficus rename, after the build and before the restart: the checkout's package name (now the
+  // updated one) says whether its code reads FICUS_. The build and migration read the file as it
+  // was (the new code bridges TAU_ in-process), so a failed update never leaves it renamed.
+  await migrateCheckoutEnv(root, { log })
 
   log(`Restarting under ${args.context.supervisor}`)
   await restartSupervisor(args.context)
