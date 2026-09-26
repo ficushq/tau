@@ -161,19 +161,24 @@ release on an already renamed host is refused (see `--restore-env-backup`).
   target prefix and the release; it is flushed to disk before the first rename
   and removed only when the release that reads the new names is serving (or
   after a verified restore).
-- **Restore.** A failed health check (the automatic rollback), any other
-  failure after the rename, and `SIGTERM` / `SIGHUP` / `SIGINT` (exit 143 /
-  129 / 130) put the set back byte for byte before the script exits. The
-  rename itself runs immediately before the `current` symlink moves (artifact
-  mode) or before the restart (git mode), so the old core runs against renamed
-  files for one step at most.
-- **Reconcile.** A run that could not restore — `SIGKILL`, OOM, reboot —
+- **The files follow the active release.** When a run fails or is signalled
+  (`SIGTERM` / `SIGHUP` / `SIGINT`, exit 143 / 129 / 130) after renaming, the
+  env files are made to match the release that is serving at that moment:
+  before the `current` symlink moved (or after the automatic rollback moved
+  it back) the set is restored byte for byte; after it moved to the Ficus
+  release the rename is kept and committed. A dropped control connection
+  cannot interrupt this (the toolkit ignores `SIGPIPE`, and a failed log
+  write never stops it). The rename itself runs immediately before the
+  `current` symlink moves (artifact mode) or before the restart (git mode).
+- **Reconcile.** A run that could not settle — `SIGKILL`, OOM, reboot —
   leaves the journal. The next `upgrade-host.sh`, `setup-host.sh` or
   `apply-artifacts.sh --config` makes the files match the release that is
   serving: it restores the set when that release reads `TAU_*`, and finishes
   the rename when it reads `FICUS_*`. The files are renamed one by one and
   each rename is idempotent, so a half-renamed host is always finished, never
-  skipped.
+  skipped. Toolkit runs that can rename, restore or reconcile (upgrade,
+  setup, `apply-artifacts.sh --config`, `--restore-env-backup`) take an
+  exclusive `flock` on `/var/backups/ficus-env-rename/.lock` first.
 - **Units after a conversion.** When the same upgrade converts a git checkout
   to the artifact layout, the units are left out of the set; a restore
   re-renders them for the current layout with `TAU_ROOT` instead of copying
