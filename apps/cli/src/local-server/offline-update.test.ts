@@ -187,6 +187,78 @@ describe('runOfflineUpdate', () => {
     expect(rec.calls.some((c) => c.command[1] === 'pm2')).toBe(false)
   })
 
+  describe('--ref onto code that predates the Ficus rename', () => {
+    let root: string
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'ficus-offline-downgrade-'))
+      writeFileSync(join(root, '.env'), 'FICUS_SANDBOX_RUNTIME=host\nFICUS_PASSWORD=p\n')
+    })
+    afterEach(() => rmSync(root, { recursive: true, force: true }))
+    const tauPackage = { stdout: JSON.stringify({ name: 'tau' }) }
+    const sha = 'c'.repeat(40)
+    const tag = {
+      'git check-ref-format --branch v0.1.0': {},
+      'git ls-remote --refs --exit-code origin refs/heads/v0.1.0 refs/tags/v0.1.0': {
+        stdout: `${sha}\trefs/tags/v0.1.0\n`,
+      },
+    }
+
+    it('refuses a tag whose package.json is named "tau" on a renamed install, pointing at the backups', async () => {
+      const rec = recordingRunner({ ...base, ...tag, 'git show refs/tags/v0.1.0:package.json': tauPackage })
+      const error = (await runTestOfflineUpdate({ root, ref: 'v0.1.0', runner: rec.runner, log: () => {} }).catch(
+        (e: unknown) => e
+      )) as Error
+      expect(error.message).toContain('refusing to check out v0.1.0: it predates the Ficus rename')
+      expect(error.message).toContain(`restore ${join(root, '.env.pre-ficus-*')}`)
+      expect(error.message).toContain('ecosystem.config.js.pre-ficus-*')
+      const joined = rec.calls.map((c) => c.command.join(' '))
+      expect(joined).toContain('git fetch --no-tags origin refs/tags/v0.1.0:refs/tags/v0.1.0')
+      expect(joined.some((command) => command.startsWith('git checkout'))).toBe(false)
+      expect(joined.some((command) => command.includes('update:offline'))).toBe(false)
+    })
+    it('checks the fetched commit for an explicit sha', async () => {
+      const rec = recordingRunner({ ...base, 'git show FETCH_HEAD:package.json': tauPackage })
+      await expect(runTestOfflineUpdate({ root, ref: sha, runner: rec.runner, log: () => {} })).rejects.toThrow(
+        `refusing to check out ${sha}`
+      )
+      expect(rec.calls.some((c) => c.command[1] === 'checkout')).toBe(false)
+    })
+    it('checks the branch git checkout would use: the local one when it exists, else the fetched one', async () => {
+      const branch = {
+        'git check-ref-format --branch old': {},
+        'git ls-remote --refs --exit-code origin refs/heads/old refs/tags/old': { stdout: `${sha}\trefs/heads/old\n` },
+      }
+      const fetched = recordingRunner({
+        ...base,
+        ...branch,
+        'git show-ref --verify --quiet refs/heads/old': { code: 1 },
+        'git show refs/remotes/origin/old:package.json': tauPackage,
+      })
+      await expect(runTestOfflineUpdate({ root, ref: 'old', runner: fetched.runner, log: () => {} })).rejects.toThrow(
+        'refusing to check out old'
+      )
+      const local = recordingRunner({ ...base, ...branch, 'git show refs/heads/old:package.json': tauPackage })
+      await expect(runTestOfflineUpdate({ root, ref: 'old', runner: local.runner, log: () => {} })).rejects.toThrow(
+        'refusing to check out old'
+      )
+    })
+    it('allows a ref that is already a Ficus release', async () => {
+      const rec = recordingRunner({
+        ...base,
+        ...tag,
+        'git show refs/tags/v0.1.0:package.json': { stdout: JSON.stringify({ name: 'ficus' }) },
+      })
+      await runTestOfflineUpdate({ root, ref: 'v0.1.0', runner: rec.runner, log: () => {} })
+      expect(rec.calls.map((c) => c.command.join(' '))).toContain('git checkout --recurse-submodules v0.1.0')
+    })
+    it('does not look when the install has not been renamed yet', async () => {
+      writeFileSync(join(root, '.env'), 'TAU_PASSWORD=p\n')
+      const rec = recordingRunner({ ...base, ...tag, 'git show refs/tags/v0.1.0:package.json': tauPackage })
+      await runTestOfflineUpdate({ root, ref: 'v0.1.0', runner: rec.runner, log: () => {} })
+      expect(rec.calls.some((c) => c.command[1] === 'show')).toBe(false)
+    })
+  })
+
   describe('a local install whose .env predates the Ficus rename', () => {
     const legacy = 'TAU_SANDBOX_RUNTIME=host\nTAU_PASSWORD=real-password\n'
     const renamed = 'FICUS_SANDBOX_RUNTIME=host\nFICUS_PASSWORD=real-password\n'

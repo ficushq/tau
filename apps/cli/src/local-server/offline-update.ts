@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { assertCheckoutEnvRenamable, migrateCheckoutEnv } from './env-prefix'
 import { restartSupervisor, type SupervisorContext } from './supervisor'
 import type { Runner } from './runner'
@@ -44,6 +46,43 @@ export function isTransportError(err: unknown): boolean {
   return false
 }
 
+/** The install's `.env` already names FICUS_ settings (a renamed, or freshly set up, install). */
+function installUsesFicusEnv(root: string): boolean {
+  try {
+    return /^\s*(?:export\s+)?FICUS_[A-Za-z0-9_]*=/m.test(readFileSync(join(root, '.env'), 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * `server update --ref <ref>` onto code that predates the Ficus rename would run it on a `.env`
+ * whose settings it cannot read (it reads TAU_ only). Refuse before the checkout, and name the
+ * way back: the byte-for-byte backups the rename took.
+ */
+async function refuseDowngradePastRename(
+  root: string,
+  runGit: (argv: string[]) => ReturnType<Runner>,
+  ref: string,
+  target: () => Promise<string>
+): Promise<void> {
+  if (!installUsesFicusEnv(root)) return
+  const shown = await runGit(['show', `${await target()}:package.json`])
+  if (shown.code !== 0) return
+  let name: unknown
+  try {
+    name = (JSON.parse(shown.stdout) as { name?: unknown }).name
+  } catch {
+    return
+  }
+  if (name !== 'tau') return
+  throw new Error(
+    `refusing to check out ${ref}: it predates the Ficus rename (its package.json is named "tau") and reads only TAU_ settings, ` +
+      `but ${join(root, '.env')} already uses FICUS_ ones. The way back is the backups the rename took: restore ` +
+      `${join(root, '.env.pre-ficus-*')} (and ecosystem.config.js.pre-ficus-*, the newest of each) over the files, then re-run this update`
+  )
+}
+
 export interface OfflineUpdateArgs {
   root: string
   ref?: string
@@ -87,6 +126,7 @@ export async function runOfflineUpdate(args: OfflineUpdateArgs): Promise<{ befor
     // CI and operators may pin an exact commit. FETCH_HEAD avoids inventing a
     // persistent local ref for it.
     await git(['fetch', '--no-tags', 'origin', args.ref])
+    await refuseDowngradePastRename(root, runGit, args.ref, async () => 'FETCH_HEAD')
     await git(['checkout', '--recurse-submodules', 'FETCH_HEAD'])
   } else {
     const validation = await runGit(['check-ref-format', '--branch', args.ref])
@@ -121,6 +161,13 @@ export async function runOfflineUpdate(args: OfflineUpdateArgs): Promise<{ befor
     } else {
       throw new Error(`ref ${args.ref} was not found on origin`)
     }
+    const ref = args.ref
+    await refuseDowngradePastRename(root, runGit, ref, async () => {
+      if (refs.has(tagRef)) return tagRef
+      // `git checkout <branch>` takes an existing local branch as it is, else the fetched one.
+      const local = await runGit(['show-ref', '--verify', '--quiet', branchRef])
+      return local.code === 0 ? branchRef : `refs/remotes/origin/${ref}`
+    })
     await git(['checkout', '--recurse-submodules', args.ref])
   }
   const after = (await git(['rev-parse', 'HEAD'])).trim()

@@ -682,6 +682,8 @@ describe('tau server', () => {
       'git check-ref-format --branch v1',
       'git ls-remote --refs --exit-code origin refs/heads/v1 refs/tags/v1',
       'git fetch --no-tags origin refs/tags/v1:refs/tags/v1',
+      // The install already reads FICUS_: the ref must not predate the rename.
+      'git show refs/tags/v1:package.json',
       'git checkout --recurse-submodules v1',
       'git rev-parse HEAD',
       'bun run update:offline -- --from ' + sha,
