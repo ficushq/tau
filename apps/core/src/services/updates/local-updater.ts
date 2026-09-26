@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { SYSTEM_RECIPIENT_ID } from '@ficus/shared'
-import { LEGACY_ENV_PREFIX } from '@ficus/shared/legacy-env'
+import { ENV_PREFIX } from '@ficus/shared/legacy-env'
 import {
   checkoutEnvPrefix,
   migrateLocalInstallEnv,
@@ -125,9 +125,10 @@ export const defaultLocalInstallEnv: LocalInstallEnvOps = {
   preflight: (root) => {
     planLocalInstallEnvMigration(root)
   },
-  // A checkout whose code predates the rename (package.json `tau`) reads TAU_ only.
+  // Fail closed: only a checkout whose package.json is named `ficus` reads FICUS_. One that
+  // predates the rename (`tau`), or whose name cannot be read, is left as it is.
   migrate: async (root) =>
-    checkoutEnvPrefix(root) === LEGACY_ENV_PREFIX ? { renamed: [], backups: [] } : migrateLocalInstallEnv(root),
+    checkoutEnvPrefix(root) === ENV_PREFIX ? migrateLocalInstallEnv(root) : { renamed: [], backups: [] },
   restore: (backups) => restoreLocalInstallEnv(backups),
 }
 
@@ -217,7 +218,16 @@ export class LocalUpdateManager {
     try {
       await this.commandRunner.runAll(commands)
     } catch (err) {
-      if (backups.length > 0) await this.localInstallEnv.restore(backups)
+      if (backups.length === 0) throw err
+      try {
+        await this.localInstallEnv.restore(backups)
+      } catch (restoreErr) {
+        // Neither failure may hide the other: the update's comes first.
+        throw new AggregateError(
+          [err, restoreErr],
+          `${this.errorMessage(err)}; restoring ${backups.join(', ')} also failed: ${this.errorMessage(restoreErr)}`
+        )
+      }
       throw err
     }
   }

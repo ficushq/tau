@@ -3,6 +3,7 @@ import { basename, relative } from 'path'
 import { ENV_PREFIX, LEGACY_ENV_PREFIX, renameEnvPrefix } from '@ficus/shared/legacy-env'
 import {
   checkoutEnvPrefix,
+  checkoutPackageName,
   migrateLocalInstallEnv,
   planLocalInstallEnvMigration,
   type LocalInstallEnvMigration,
@@ -19,21 +20,40 @@ export {
   LocalInstallEnvConflictError,
   migrateLocalInstallEnv,
   planLocalInstallEnvMigration,
+  rejectAfterRestoring,
   renameEcosystemEnvKeys,
   restoreLocalInstallEnv,
   type LocalInstallEnvMigration,
 } from '@ficus/shared/node'
 
 /**
- * A checkout whose code predates the rename (root package.json named `tau`) reads TAU_ only:
- * renaming its files would break it. Every other checkout is renamed.
+ * Whether `root`'s code reads FICUS_: its root package.json is named exactly `ficus`. Fail closed:
+ * a checkout that predates the rename (`tau`) reads TAU_ only, and one whose name is anything else
+ * or cannot be read is never renamed.
  */
-export function checkoutPredatesRename(root: string): boolean {
-  return checkoutEnvPrefix(root) === LEGACY_ENV_PREFIX
+export function checkoutReadsFicusEnv(root: string): boolean {
+  return checkoutEnvPrefix(root) === ENV_PREFIX
+}
+
+/** "is named "x"" / "could not be read", for messages about a checkout's package.json. */
+export function describeCheckoutPackage(root: string): string {
+  const name = checkoutPackageName(root)
+  return name === null ? 'could not be read' : `is named ${JSON.stringify(name)}`
+}
+
+/** Whether the install's files still carry TAU_ keys a rename would move (a conflict counts). */
+function hasLegacyKeys(root: string): boolean {
+  try {
+    return planLocalInstallEnvMigration(root).length > 0
+  } catch {
+    return true
+  }
 }
 
 /**
- * Rename `root`'s install files unless the checkout predates the rename, and say what moved.
+ * Rename `root`'s install files when its code reads FICUS_, and say what moved. A checkout that
+ * predates the rename is left alone silently (its code reads TAU_); one whose package name is
+ * unknown is left alone with a warning, because its TAU_ settings then stay unrenamed.
  * A protected TAU_/FICUS_ conflict rejects with LocalInstallEnvConflictError (an
  * EnvPrefixConflictError) naming the file and keys, never a value, with nothing written.
  */
@@ -41,7 +61,14 @@ export async function migrateCheckoutEnv(
   root: string,
   options: { log?: (line: string) => void; now?: Date } = {}
 ): Promise<LocalInstallEnvMigration> {
-  if (checkoutPredatesRename(root)) return { renamed: [], backups: [] }
+  if (!checkoutReadsFicusEnv(root)) {
+    if (checkoutEnvPrefix(root) !== LEGACY_ENV_PREFIX && hasLegacyKeys(root)) {
+      options.log?.(
+        `warning: TAU_ settings in ${root} were not renamed to FICUS_: its package.json ${describeCheckoutPackage(root)}, not "ficus"`
+      )
+    }
+    return { renamed: [], backups: [] }
+  }
   const result = await migrateLocalInstallEnv(root, options.now)
   if (result.renamed.length > 0) {
     const files = result.renamed.map((path) => basename(path)).join(' and ')
@@ -66,7 +93,7 @@ export function assertCheckoutEnvRenamable(root: string): void {
 
 /** The plan line for a rename setup would make, or null when there is nothing to rename. */
 export function checkoutEnvRenamePlan(root: string): string | null {
-  if (checkoutPredatesRename(root)) return null
+  if (!checkoutReadsFicusEnv(root)) return null
   const files = planLocalInstallEnvMigration(root).map((change) => basename(change.path))
   if (files.length === 0) return null
   return `rename TAU_ settings to FICUS_ in ${files.join(' and ')} (byte-for-byte backup${files.length > 1 ? 's' : ''} ${files.map((file) => `${file}.pre-ficus-<UTC time>`).join(', ')})`
@@ -74,7 +101,7 @@ export function checkoutEnvRenamePlan(root: string): string | null {
 
 /** `.env` text as it will read after the rename, for planning; unchanged when it cannot be renamed. */
 export function renamedEnvPreview(root: string, text: string): string {
-  if (checkoutPredatesRename(root)) return text
+  if (!checkoutReadsFicusEnv(root)) return text
   try {
     return renameEnvPrefix(text, LEGACY_ENV_PREFIX, ENV_PREFIX).content
   } catch {

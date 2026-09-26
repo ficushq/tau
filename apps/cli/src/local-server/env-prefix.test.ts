@@ -15,11 +15,13 @@ import {
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { EnvPrefixConflictError } from '@ficus/shared/legacy-env'
+import { EcosystemEnvRenameError } from '@ficus/shared/node'
 import {
   checkoutEnvPrefix,
   migrateCheckoutEnv,
   migrateLocalInstallEnv,
   planLocalInstallEnvMigration,
+  rejectAfterRestoring,
   renameEcosystemEnvKeys,
   restoreLocalInstallEnv,
 } from './env-prefix'
@@ -243,23 +245,157 @@ describe('planLocalInstallEnvMigration', () => {
 })
 
 describe('renameEcosystemEnvKeys', () => {
-  it('renames TAU_ object keys (commented or quoted) and leaves values and other text alone', () => {
-    const text = [
-      `  TAU_PM2_API_NAME: '${API}',`,
-      "  // TAU_SERVE_WEB: '1',",
-      "  'TAU_QUOTED': 'x',",
-      "  script: 'TAU_NOT_A_KEY',",
-      `  name: '${WORKER}',`,
+  /** An ecosystem file with one app per env body. */
+  const apps = (...envs: string[][]) =>
+    [
+      'module.exports = {',
+      '  apps: [',
+      ...envs.flatMap((env, index) => [
+        '    {',
+        `      name: '${index === 0 ? API : WORKER}',`,
+        '      env: {',
+        ...env.map((line) => `        ${line}`),
+        '      },',
+        '    },',
+      ]),
+      '  ],',
+      '}',
+      '',
     ].join('\n')
-    expect(renameEcosystemEnvKeys(text)).toBe(
-      [
-        `  FICUS_PM2_API_NAME: '${API}',`,
-        "  // FICUS_SERVE_WEB: '1',",
-        "  'FICUS_QUOTED': 'x',",
-        "  script: 'TAU_NOT_A_KEY',",
-        `  name: '${WORKER}',`,
-      ].join('\n')
+
+  it('renames TAU_ object keys (commented or quoted) and leaves values and other text alone', () => {
+    const before = apps([
+      `TAU_PM2_API_NAME: '${API}',`,
+      "// TAU_SERVE_WEB: '1',",
+      "'TAU_QUOTED': 'x',",
+      "script: 'TAU_NOT_A_KEY',",
+    ])
+    expect(renameEcosystemEnvKeys(before)).toBe(
+      apps([
+        `FICUS_PM2_API_NAME: '${API}',`,
+        "// FICUS_SERVE_WEB: '1',",
+        "'FICUS_QUOTED': 'x',",
+        "script: 'TAU_NOT_A_KEY',",
+      ])
     )
+  })
+
+  it('collapses a TAU_ key whose FICUS_ twin in the same object holds the identical value', () => {
+    expect(renameEcosystemEnvKeys(apps(["TAU_PASSWORD: 'same',", 'FICUS_PASSWORD: "same",']))).toBe(
+      apps(['FICUS_PASSWORD: "same",'])
+    )
+  })
+
+  it('keeps FICUS_ for a differing unprotected duplicate: it is what the process reads', () => {
+    expect(renameEcosystemEnvKeys(apps(["TAU_PM2_API_NAME: 'old',", "FICUS_PM2_API_NAME: 'new',"]))).toBe(
+      apps(["FICUS_PM2_API_NAME: 'new',"])
+    )
+  })
+
+  it('refuses a differing protected duplicate, naming the key and neither value', () => {
+    const run = () =>
+      renameEcosystemEnvKeys(apps(["TAU_ENCRYPTION_KEY: 'old-key-value',", "FICUS_ENCRYPTION_KEY: 'new-key-value',"]))
+    expect(run).toThrow(EnvPrefixConflictError)
+    try {
+      run()
+    } catch (error) {
+      expect((error as EnvPrefixConflictError).keys).toEqual(['TAU_ENCRYPTION_KEY'])
+      expect((error as Error).message).not.toContain('key-value')
+    }
+  })
+
+  it('scopes duplicates to one object: a FICUS_ key in another app does not shadow it', () => {
+    expect(renameEcosystemEnvKeys(apps(["TAU_PASSWORD: 'a',"], ["FICUS_PASSWORD: 'b',"]))).toBe(
+      apps(["FICUS_PASSWORD: 'a',"], ["FICUS_PASSWORD: 'b',"])
+    )
+  })
+
+  it('never adds a commented-out key that already exists as FICUS_', () => {
+    expect(renameEcosystemEnvKeys(apps(["// TAU_SERVE_WEB: '1',", "FICUS_SERVE_WEB: '1',"]))).toBe(
+      apps(["// TAU_SERVE_WEB: '1',", "FICUS_SERVE_WEB: '1',"])
+    )
+  })
+
+  it('leaves a one-line object and text inside strings or comments alone', () => {
+    const text = [
+      'module.exports = {',
+      "  apps: [{ name: 'x', env: { TAU_ONE_LINE: 1 } }],",
+      '  note: `',
+      '  TAU_IN_TEMPLATE: 1,',
+      '  `,',
+      '  /*',
+      '  TAU_IN_BLOCK: 1,',
+      '  */',
+      '}',
+    ].join('\n')
+    expect(renameEcosystemEnvKeys(text)).toBe(text)
+  })
+
+  it('refuses a file it cannot follow, and a multi-line duplicate it cannot drop line by line', () => {
+    expect(() => renameEcosystemEnvKeys("module.exports = {\n  TAU_X: 'a',\n")).toThrow(EcosystemEnvRenameError)
+    expect(() => renameEcosystemEnvKeys("module.exports = {\n  TAU_X: 'it's',\n}\n")).toThrow(EcosystemEnvRenameError)
+    expect(() => renameEcosystemEnvKeys(apps(['TAU_LIST: [', "  'a',", '],', "FICUS_LIST: ['b'],"]))).toThrow(
+      'TAU_LIST spans several lines next to FICUS_LIST; rename its TAU_ keys to FICUS_ by hand, then re-run'
+    )
+  })
+})
+
+describe('migrateLocalInstallEnv on ecosystem.config.js duplicates', () => {
+  it('refuses a protected conflict before any backup or write, naming the file and key only', async () => {
+    const ecosystem = [
+      'module.exports = {',
+      '  apps: [{',
+      `    name: '${API}',`,
+      '    env: {',
+      "      TAU_ENCRYPTION_KEY: 'old-key-value',",
+      "      FICUS_ENCRYPTION_KEY: 'new-key-value',",
+      '    },',
+      '  }],',
+      '}',
+      '',
+    ].join('\n')
+    writeFileSync(join(root, '.env'), ENV)
+    writeFileSync(join(root, 'ecosystem.config.js'), ecosystem)
+
+    const error = (await migrateLocalInstallEnv(root, NOW).catch((e: unknown) => e)) as EnvPrefixConflictError
+    expect(error).toBeInstanceOf(EnvPrefixConflictError)
+    expect(error.keys).toEqual(['TAU_ENCRYPTION_KEY'])
+    expect(error.message).toContain(join(root, 'ecosystem.config.js'))
+    expect(error.message).toContain('remove the wrong value, then re-run')
+    expect(error.message).not.toContain('key-value')
+    // Nothing moved, .env included: every file is planned before any is written.
+    expect(read('.env').equals(Buffer.from(ENV))).toBe(true)
+    expect(read('ecosystem.config.js').equals(Buffer.from(ecosystem))).toBe(true)
+    expect(backupsIn()).toEqual([])
+  })
+
+  it('refuses an ecosystem file it cannot follow, naming it, with nothing written', async () => {
+    writeFileSync(join(root, '.env'), ENV)
+    writeFileSync(join(root, 'ecosystem.config.js'), "module.exports = {\n  TAU_X: 'a',\n")
+    await expect(migrateLocalInstallEnv(root, NOW)).rejects.toThrow(
+      `${join(root, 'ecosystem.config.js')}: its quotes, comments or brackets do not balance`
+    )
+    expect(read('.env').toString()).toBe(ENV)
+    expect(backupsIn()).toEqual([])
+  })
+})
+
+describe('rejectAfterRestoring', () => {
+  it('rejects with the original error once the backups are restored', async () => {
+    const original = new Error('replace failed')
+    await expect(rejectAfterRestoring(original, [])).rejects.toBe(original)
+  })
+
+  it('keeps both errors when the restore fails too, the original first', async () => {
+    const original = new Error('replace failed')
+    const error = (await rejectAfterRestoring(original, [join(root, 'missing.pre-ficus-1')]).catch(
+      (e: unknown) => e
+    )) as AggregateError
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(error.errors[0]).toBe(original)
+    expect(error.errors).toHaveLength(2)
+    expect(error.message).toContain('replace failed')
+    expect(error.message).toContain('restoring the backups')
   })
 })
 
@@ -288,6 +424,34 @@ describe('checkoutEnvPrefix / migrateCheckoutEnv', () => {
     const result = await migrateCheckoutEnv(root, { log: (line) => logs.push(line), now: NOW })
     expect(result.backups).toEqual([join(root, `.env.pre-ficus-${STAMP}`)])
     expect(logs).toEqual([`Renamed TAU_ settings to FICUS_ in .env (backup: .env.pre-ficus-${STAMP})`])
+  })
+
+  it('fails closed on a missing or unknown package name, with a warning when TAU_ settings stay', async () => {
+    writeFileSync(join(root, '.env'), ENV)
+    const logs: string[] = []
+    expect(await migrateCheckoutEnv(root, { log: (line) => logs.push(line), now: NOW })).toEqual({
+      renamed: [],
+      backups: [],
+    })
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fork' }))
+    await migrateCheckoutEnv(root, { log: (line) => logs.push(line), now: NOW })
+    expect(read('.env').toString()).toBe(ENV)
+    expect(backupsIn()).toEqual([])
+    expect(logs).toEqual([
+      `warning: TAU_ settings in ${root} were not renamed to FICUS_: its package.json could not be read, not "ficus"`,
+      `warning: TAU_ settings in ${root} were not renamed to FICUS_: its package.json is named "fork", not "ficus"`,
+    ])
+  })
+
+  it('stays silent on a checkout that predates the rename, and on one with nothing to rename', async () => {
+    const logs: string[] = []
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'tau' }))
+    writeFileSync(join(root, '.env'), ENV)
+    await migrateCheckoutEnv(root, { log: (line) => logs.push(line) })
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fork' }))
+    writeFileSync(join(root, '.env'), 'FICUS_PASSWORD=p\n')
+    await migrateCheckoutEnv(root, { log: (line) => logs.push(line) })
+    expect(logs).toEqual([])
   })
 
   it('says nothing when there is nothing to rename', async () => {

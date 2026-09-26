@@ -174,6 +174,21 @@ describe('runSetup', () => {
     expect(readdirSync(root).some((name) => name.includes('.pre-ficus-'))).toBe(false)
     expect(calls).toEqual([])
   })
+  it('fails closed on a checkout whose package name is not "ficus", or cannot be read', async () => {
+    writeFileSync(join(root, '.env'), 'TAU_PASSWORD=real-password\n')
+    for (const [contents, described] of [
+      [JSON.stringify({ name: 'my-fork' }), 'is named "my-fork"'],
+      ['{not json', 'could not be read'],
+    ]) {
+      writeFileSync(join(root, 'package.json'), contents)
+      const { d, calls } = deps()
+      await expect(runSetup(opts(), d)).rejects.toThrow(
+        `${root} is not a Ficus checkout: its package.json ${described}, not "ficus". Setup renames TAU_ settings and writes FICUS_ ones only in a Ficus checkout`
+      )
+      expect(calls).toEqual([])
+      expect(readFileSync(join(root, '.env'), 'utf8')).toBe('TAU_PASSWORD=real-password\n')
+    }
+  })
   it('refuses a checkout that predates the Ficus rename before preflight or any mutation', async () => {
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'tau' }))
     writeFileSync(join(root, '.env'), 'TAU_PASSWORD=real-password\n')

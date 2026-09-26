@@ -2,7 +2,13 @@ import { randomBytes } from 'crypto'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { parseEnvFile } from './env-file'
-import { assertCheckoutEnvRenamable, checkoutPredatesRename } from './env-prefix'
+import { LEGACY_ENV_PREFIX } from '@ficus/shared/legacy-env'
+import {
+  assertCheckoutEnvRenamable,
+  checkoutEnvPrefix,
+  checkoutReadsFicusEnv,
+  describeCheckoutPackage,
+} from './env-prefix'
 import { DEFAULT_INSTANCE, instanceNames } from './instance'
 import { composeDatabaseUrl } from './options'
 import {
@@ -187,9 +193,15 @@ export async function runSetup(options: SetupOptions, deps: SetupDeps): Promise<
 
   // Ficus rename. This CLI writes FICUS_ settings: into a checkout whose code still reads TAU_
   // they would be dead weight, and they would collide with its TAU_ secrets at its first update.
-  if (checkoutPredatesRename(root)) {
+  // Fail closed: only a checkout whose package.json is named exactly "ficus" is set up.
+  if (checkoutEnvPrefix(root) === LEGACY_ENV_PREFIX) {
     throw new SetupFailure(
       `${root} predates the Ficus rename (its package.json is named "tau"): update it first (git pull), or run its own \`bun run setup\``
+    )
+  }
+  if (!checkoutReadsFicusEnv(root)) {
+    throw new SetupFailure(
+      `${root} is not a Ficus checkout: its package.json ${describeCheckoutPackage(root)}, not "ficus". Setup renames TAU_ settings and writes FICUS_ ones only in a Ficus checkout`
     )
   }
   // A TAU_/FICUS_ secret conflict stops setup before anything runs (the env step renames).

@@ -1010,6 +1010,39 @@ describe('LocalUpdateManager local-install env rename', () => {
     expect(backups()).toEqual([])
   })
 
+  it('keeps both errors when restoring after a failed update fails too', async () => {
+    const { updater } = manager({
+      repoRoot: dir,
+      statusPath: join(dir, 'status.json'),
+      commandRunner: {
+        runAll: async () => {
+          throw new Error('bun run build:core exited with 1')
+        },
+      },
+      localInstallEnv: {
+        ...defaultLocalInstallEnv,
+        restore: async () => {
+          throw new Error('EACCES: permission denied')
+        },
+      },
+      gitResponses: CORE_CHANGE,
+    })
+    const error = (await updater.apply({ manual: true }).catch((e: unknown) => e)) as AggregateError
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error.errors[0] as Error).message).toBe('bun run build:core exited with 1')
+    expect((error.errors[1] as Error).message).toBe('EACCES: permission denied')
+    expect(updater.status().latest?.error).toContain('bun run build:core exited with 1')
+    expect(updater.status().latest?.error).toContain('EACCES: permission denied')
+  })
+
+  it('fails closed on a checkout whose package name it cannot read', async () => {
+    rmSync(join(dir, 'package.json'))
+    const { updater } = manager({ repoRoot: dir, statusPath: join(dir, 'status.json'), gitResponses: CORE_CHANGE })
+    expect((await updater.apply({ manual: true })).status).toBe('succeeded')
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(LEGACY_ENV)
+    expect(backups()).toEqual([])
+  })
+
   it('leaves a checkout that still predates the rename alone after the merge', async () => {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'tau' }))
     const { updater } = manager({ repoRoot: dir, statusPath: join(dir, 'status.json'), gitResponses: CORE_CHANGE })

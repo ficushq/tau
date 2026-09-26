@@ -20,6 +20,7 @@ import {
   writeSync,
 } from 'fs'
 import { basename, dirname, join } from 'path'
+import { EcosystemEnvRenameError, renameEcosystemEnvKeys } from './ecosystem-env'
 import { ENV_PREFIX, EnvPrefixConflictError, LEGACY_ENV_PREFIX, renameEnvPrefix, type EnvPrefix } from '../legacy-env'
 
 /** The files of a local install that carry env names: the dotenv file and the pm2 ecosystem. */
@@ -56,41 +57,34 @@ export class LocalInstallEnvConflictError extends EnvPrefixConflictError {
 /**
  * The env prefix a checkout's code reads, from its root `package.json` name: `ficus` → FICUS_,
  * `tau` (a checkout that predates the rename) → TAU_, anything else or unreadable → null. The same
- * direction key the setup toolkit uses for git checkouts.
+ * direction key the setup toolkit uses for git checkouts. Callers rename only on FICUS_: null
+ * never renames (fail closed).
  */
 export function checkoutEnvPrefix(root: string): EnvPrefix | null {
+  const name = checkoutPackageName(root)
+  if (name === 'ficus') return ENV_PREFIX
+  if (name === 'tau') return LEGACY_ENV_PREFIX
+  return null
+}
+
+/** The root `package.json` name, or null when it is missing, unreadable or not a string. */
+export function checkoutPackageName(root: string): string | null {
   try {
     const name = (JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { name?: unknown }).name
-    if (name === 'ficus') return ENV_PREFIX
-    if (name === 'tau') return LEGACY_ENV_PREFIX
-    return null
+    return typeof name === 'string' ? name : null
   } catch {
     return null
   }
 }
 
-/**
- * Rename the `TAU_X:` env keys of a pm2 ecosystem file to `FICUS_X:`. Only object keys move (one per
- * line, optionally quoted or commented out, as the example file writes them); values, such as the
- * pm2 process names, are never touched.
- */
-export function renameEcosystemEnvKeys(text: string): string {
-  return text.replace(
-    /^(\s*(?:\/\/\s*)?['"]?)TAU_([A-Z0-9_]+)(['"]?\s*:)/gm,
-    (_match, lead: string, suffix: string, tail: string) => `${lead}${ENV_PREFIX}${suffix}${tail}`
-  )
-}
-
 function renameFile(name: string, path: string, text: string): string {
-  if (name === '.env') {
-    try {
-      return renameEnvPrefix(text, LEGACY_ENV_PREFIX, ENV_PREFIX).content
-    } catch (error) {
-      if (error instanceof EnvPrefixConflictError) throw new LocalInstallEnvConflictError(path, error.keys)
-      throw error
-    }
+  try {
+    return name === '.env' ? renameEnvPrefix(text, LEGACY_ENV_PREFIX, ENV_PREFIX).content : renameEcosystemEnvKeys(text)
+  } catch (error) {
+    if (error instanceof EnvPrefixConflictError) throw new LocalInstallEnvConflictError(path, error.keys)
+    if (error instanceof EcosystemEnvRenameError) error.message = `${path}: ${error.message}`
+    throw error
   }
-  return renameEcosystemEnvKeys(text)
 }
 
 /**
@@ -184,10 +178,27 @@ export async function migrateLocalInstallEnv(root: string, now: Date = new Date(
       result.backups.push(backups[index])
     }
   } catch (error) {
-    await restoreLocalInstallEnv(result.backups)
-    throw error
+    return rejectAfterRestoring(error, result.backups)
   }
   return result
+}
+
+/**
+ * Restore `backups` after `error`, then reject with `error`. When the restore fails too, reject
+ * with an AggregateError carrying both, the original first: neither may be lost.
+ */
+export async function rejectAfterRestoring(error: unknown, backups: string[]): Promise<never> {
+  try {
+    await restoreLocalInstallEnv(backups)
+  } catch (restoreError) {
+    const reason = error instanceof Error ? error.message : String(error)
+    const restoreReason = restoreError instanceof Error ? restoreError.message : String(restoreError)
+    throw new AggregateError(
+      [error, restoreError],
+      `${reason}; restoring the backups (${backups.join(', ')}) also failed: ${restoreReason}`
+    )
+  }
+  throw error
 }
 
 /**
