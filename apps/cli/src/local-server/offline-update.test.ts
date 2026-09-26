@@ -196,15 +196,18 @@ describe('runOfflineUpdate', () => {
     afterEach(() => rmSync(root, { recursive: true, force: true }))
     const tauPackage = { stdout: JSON.stringify({ name: 'tau' }) }
     const sha = 'c'.repeat(40)
+    const old = 'd'.repeat(40)
     const tag = {
       'git check-ref-format --branch v0.1.0': {},
       'git ls-remote --refs --exit-code origin refs/heads/v0.1.0 refs/tags/v0.1.0': {
         stdout: `${sha}\trefs/tags/v0.1.0\n`,
       },
+      // No local branch of that name: the tag is what checkout lands on.
+      'git rev-parse --verify --quiet v0.1.0^{commit}': { stdout: `${old}\n` },
     }
 
     it('refuses a tag whose package.json is named "tau" on a renamed install, pointing at the backups', async () => {
-      const rec = recordingRunner({ ...base, ...tag, 'git show refs/tags/v0.1.0:package.json': tauPackage })
+      const rec = recordingRunner({ ...base, ...tag, [`git show ${old}:package.json`]: tauPackage })
       const error = (await runTestOfflineUpdate({ root, ref: 'v0.1.0', runner: rec.runner, log: () => {} }).catch(
         (e: unknown) => e
       )) as Error
@@ -217,45 +220,120 @@ describe('runOfflineUpdate', () => {
       expect(joined.some((command) => command.includes('update:offline'))).toBe(false)
     })
     it('checks the fetched commit for an explicit sha', async () => {
-      const rec = recordingRunner({ ...base, 'git show FETCH_HEAD:package.json': tauPackage })
+      const rec = recordingRunner({
+        ...base,
+        'git rev-parse --verify --quiet FETCH_HEAD^{commit}': { stdout: `${old}\n` },
+        [`git show ${old}:package.json`]: tauPackage,
+      })
       await expect(runTestOfflineUpdate({ root, ref: sha, runner: rec.runner, log: () => {} })).rejects.toThrow(
         `refusing to check out ${sha}`
       )
       expect(rec.calls.some((c) => c.command[1] === 'checkout')).toBe(false)
     })
-    it('checks the branch git checkout would use: the local one when it exists, else the fetched one', async () => {
-      const branch = {
-        'git check-ref-format --branch old': {},
-        'git ls-remote --refs --exit-code origin refs/heads/old refs/tags/old': { stdout: `${sha}\trefs/heads/old\n` },
-      }
-      const fetched = recordingRunner({
-        ...base,
-        ...branch,
-        'git show-ref --verify --quiet refs/heads/old': { code: 1 },
-        'git show refs/remotes/origin/old:package.json': tauPackage,
-      })
-      await expect(runTestOfflineUpdate({ root, ref: 'old', runner: fetched.runner, log: () => {} })).rejects.toThrow(
-        'refusing to check out old'
+    it('counts FICUS_ keys in ecosystem.config.js as a renamed install too', async () => {
+      writeFileSync(join(root, '.env'), 'PORT=3000\n')
+      writeFileSync(
+        join(root, 'ecosystem.config.js'),
+        "module.exports = { apps: [{ env: {\n  FICUS_PM2_API_NAME: 'x',\n} }] }\n"
       )
-      const local = recordingRunner({ ...base, ...branch, 'git show refs/heads/old:package.json': tauPackage })
-      await expect(runTestOfflineUpdate({ root, ref: 'old', runner: local.runner, log: () => {} })).rejects.toThrow(
-        'refusing to check out old'
+      const rec = recordingRunner({ ...base, ...tag, [`git show ${old}:package.json`]: tauPackage })
+      await expect(runTestOfflineUpdate({ root, ref: 'v0.1.0', runner: rec.runner, log: () => {} })).rejects.toThrow(
+        'refusing to check out v0.1.0'
       )
     })
     it('allows a ref that is already a Ficus release', async () => {
       const rec = recordingRunner({
         ...base,
         ...tag,
-        'git show refs/tags/v0.1.0:package.json': { stdout: JSON.stringify({ name: 'ficus' }) },
+        [`git show ${old}:package.json`]: { stdout: JSON.stringify({ name: 'ficus' }) },
       })
       await runTestOfflineUpdate({ root, ref: 'v0.1.0', runner: rec.runner, log: () => {} })
       expect(rec.calls.map((c) => c.command.join(' '))).toContain('git checkout --recurse-submodules v0.1.0')
     })
     it('does not look when the install has not been renamed yet', async () => {
       writeFileSync(join(root, '.env'), 'TAU_PASSWORD=p\n')
-      const rec = recordingRunner({ ...base, ...tag, 'git show refs/tags/v0.1.0:package.json': tauPackage })
+      const rec = recordingRunner({ ...base, ...tag, [`git show ${old}:package.json`]: tauPackage })
       await runTestOfflineUpdate({ root, ref: 'v0.1.0', runner: rec.runner, log: () => {} })
-      expect(rec.calls.some((c) => c.command[1] === 'show')).toBe(false)
+      expect(
+        rec.calls.some((c) => c.command[1] === 'show' || (c.command[1] === 'rev-parse' && c.command[2] === '--verify'))
+      ).toBe(false)
+    })
+  })
+
+  // M2: the guard must inspect exactly what `git checkout <ref>` lands on, in a real repository.
+  describe('--ref shadowing, against real git', () => {
+    /** origin: a pre-rename commit (package.json "tau") and a Ficus one on main; a checkout of it. */
+    async function renameFixture() {
+      const dir = mkdtempSync(join(tmpdir(), 'ficus-offline-shadow-'))
+      const remote = join(dir, 'remote.git')
+      const source = join(dir, 'source')
+      const checkout = join(dir, 'checkout')
+      await git(dir, 'init', '--bare', remote)
+      await git(dir, 'init', '--initial-branch=main', source)
+      await git(source, 'config', 'user.email', 'test@example.com')
+      await git(source, 'config', 'user.name', 'Ficus Test')
+      writeFileSync(join(source, '.gitignore'), '.env\n')
+      writeFileSync(join(source, 'package.json'), JSON.stringify({ name: 'tau' }))
+      await git(source, 'add', '.gitignore', 'package.json')
+      await git(source, 'commit', '-m', 'pre-rename')
+      const legacy = await git(source, 'rev-parse', 'HEAD')
+      writeFileSync(join(source, 'package.json'), JSON.stringify({ name: 'ficus' }))
+      await git(source, 'commit', '-am', 'rename')
+      const ficus = await git(source, 'rev-parse', 'HEAD')
+      await git(source, 'remote', 'add', 'origin', remote)
+      await git(source, 'push', '--set-upstream', 'origin', 'main')
+      await git(remote, 'symbolic-ref', 'HEAD', 'refs/heads/main')
+      await git(dir, 'clone', remote, checkout)
+      await git(checkout, 'config', 'advice.detachedHead', 'false')
+      // A renamed install.
+      writeFileSync(join(checkout, '.env'), 'FICUS_PASSWORD=p\n')
+      const runner: Runner = async (command, options = {}) =>
+        command[0] === 'git' ? defaultRunner(command, options) : { code: 0, stdout: '', stderr: '' }
+      return { dir, source, checkout, legacy, ficus, runner }
+    }
+
+    it('checks the local branch that shadows a Ficus tag of the same name', async () => {
+      const f = await renameFixture()
+      try {
+        await git(f.source, 'tag', 'rel', f.ficus)
+        await git(f.source, 'push', 'origin', 'refs/tags/rel')
+        // Checkout prefers this local branch over the tag.
+        await git(f.checkout, 'branch', 'rel', f.legacy)
+        await expect(
+          runTestOfflineUpdate({ root: f.checkout, ref: 'rel', runner: f.runner, log: () => {} })
+        ).rejects.toThrow('refusing to check out rel: it predates the Ficus rename')
+        expect(await git(f.checkout, 'rev-parse', 'HEAD')).toBe(f.ficus)
+      } finally {
+        rmSync(f.dir, { recursive: true, force: true })
+      }
+    })
+
+    it('checks the local tag that shadows a fetched Ficus branch of the same name', async () => {
+      const f = await renameFixture()
+      try {
+        await git(f.source, 'branch', 'next', f.ficus)
+        await git(f.source, 'push', 'origin', 'next')
+        // No local branch `next`: checkout lands on this tag, not on origin/next.
+        await git(f.checkout, 'tag', 'next', f.legacy)
+        await expect(
+          runTestOfflineUpdate({ root: f.checkout, ref: 'next', runner: f.runner, log: () => {} })
+        ).rejects.toThrow('refusing to check out next: it predates the Ficus rename')
+        expect(await git(f.checkout, 'rev-parse', 'HEAD')).toBe(f.ficus)
+      } finally {
+        rmSync(f.dir, { recursive: true, force: true })
+      }
+    })
+
+    it('lets a fetched Ficus branch through when nothing shadows it', async () => {
+      const f = await renameFixture()
+      try {
+        await git(f.source, 'branch', 'next', f.ficus)
+        await git(f.source, 'push', 'origin', 'next')
+        await runTestOfflineUpdate({ root: f.checkout, ref: 'next', runner: f.runner, log: () => {} })
+        expect(await git(f.checkout, 'rev-parse', 'HEAD')).toBe(f.ficus)
+      } finally {
+        rmSync(f.dir, { recursive: true, force: true })
+      }
     })
   })
 
@@ -297,6 +375,15 @@ describe('runOfflineUpdate', () => {
       expect(backups()).toHaveLength(1)
       expect(readFileSync(join(root, backups()[0]), 'utf8')).toBe(legacy)
       expect(logs).toContain(`Renamed TAU_ settings to FICUS_ in .env (backup: ${backups()[0]})`)
+    })
+    it('returns its warnings, for the --json document, when it cannot rename', async () => {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fork' }))
+      const { runner } = watching()
+      const result = await runTestOfflineUpdate({ root, runner, log: () => {} })
+      expect(result.warnings).toEqual([
+        `TAU_ settings in ${root} were not renamed to FICUS_: its package.json is named "fork", not "ficus"`,
+      ])
+      expect(readFileSync(join(root, '.env'), 'utf8')).toBe(legacy)
     })
     it('is left alone when the checkout update fails', async () => {
       const { runner } = watching({ 'bun run update:offline': { code: 1 } })

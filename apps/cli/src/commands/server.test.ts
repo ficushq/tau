@@ -219,6 +219,33 @@ describe('tau server', () => {
         expect(backups()).toEqual([])
       })
     }
+    // M4. start/restart only reach a registered checkout (package.json "tau" or "ficus"), so the
+    // warning a --json run must carry here is the rename's own: a PM2 name line it left alone.
+    it('reports what the rename left alone in the --json document instead of on stdout', async () => {
+      writeFileSync(
+        join(root, 'ecosystem.config.js'),
+        "module.exports = { apps: [{ env: {\n  TAU_PM2_API_NAME:\n    'x',\n} }] }\n"
+      )
+      const warning =
+        "TAU_PM2_API_NAME in ecosystem.config.js was not renamed to FICUS_PM2_API_NAME: it is not a single `TAU_PM2_API_NAME: '<name>',` line; rename it by hand"
+      for (const verb of ['start', 'restart']) {
+        const { runner } = watching()
+        const { run } = make({}, { runner })
+        const printed: string[] = []
+        const realLog = console.log
+        console.log = (line?: unknown) => void printed.push(String(line))
+        ;(isJsonMode as ReturnType<typeof mock>).mockReturnValue(true)
+        try {
+          await run(['server', verb])
+        } finally {
+          console.log = realLog
+          ;(isJsonMode as ReturnType<typeof mock>).mockReturnValue(false)
+        }
+        const [data] = (output as ReturnType<typeof mock>).mock.calls.at(-1) as [Record<string, unknown>]
+        expect(data.warnings).toEqual([warning])
+        expect(printed.some((line) => line.includes('not renamed'))).toBe(false)
+      }
+    })
     it('start leaves a checkout that predates the rename alone: its code reads TAU_', async () => {
       writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'tau' }))
       const { runner } = watching()
@@ -682,8 +709,11 @@ describe('tau server', () => {
       'git check-ref-format --branch v1',
       'git ls-remote --refs --exit-code origin refs/heads/v1 refs/tags/v1',
       'git fetch --no-tags origin refs/tags/v1:refs/tags/v1',
-      // The install already reads FICUS_: the ref must not predate the rename.
-      'git show refs/tags/v1:package.json',
+      // The install already reads FICUS_: resolve what checkout lands on, the way checkout does,
+      // to make sure it does not predate the rename (nothing resolves in this fixture).
+      'git rev-parse --verify --quiet refs/heads/v1^{commit}',
+      'git rev-parse --verify --quiet v1^{commit}',
+      'git rev-parse --verify --quiet refs/remotes/origin/v1^{commit}',
       'git checkout --recurse-submodules v1',
       'git rev-parse HEAD',
       'bun run update:offline -- --from ' + sha,

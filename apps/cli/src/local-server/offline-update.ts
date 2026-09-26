@@ -46,28 +46,50 @@ export function isTransportError(err: unknown): boolean {
   return false
 }
 
-/** The install's `.env` already names FICUS_ settings (a renamed, or freshly set up, install). */
+/** The install already uses FICUS_ settings: in its `.env`, or as keys of its `ecosystem.config.js`. */
 function installUsesFicusEnv(root: string): boolean {
-  try {
-    return /^\s*(?:export\s+)?FICUS_[A-Za-z0-9_]*=/m.test(readFileSync(join(root, '.env'), 'utf8'))
-  } catch {
-    return false
+  const matches = (name: string, pattern: RegExp) => {
+    try {
+      return pattern.test(readFileSync(join(root, name), 'utf8'))
+    } catch {
+      return false
+    }
   }
+  return (
+    matches('.env', /^\s*(?:export\s+)?FICUS_[A-Za-z0-9_]*=/m) ||
+    matches('ecosystem.config.js', /^\s*['"]?FICUS_[A-Z0-9_]+['"]?\s*:/m)
+  )
 }
 
 /**
- * `server update --ref <ref>` onto code that predates the Ficus rename would run it on a `.env`
- * whose settings it cannot read (it reads TAU_ only). Refuse before the checkout, and name the
- * way back: the byte-for-byte backups the rename took.
+ * The commit `git checkout <ref>` lands on, resolved the way checkout resolves it: an existing
+ * local branch first, then anything `<ref>` names as it is (a tag, a commit, FETCH_HEAD), and only
+ * then the remote-tracking branch checkout would create a local branch from. Null when none does.
+ */
+async function checkoutCommit(runGit: (argv: string[]) => ReturnType<Runner>, ref: string): Promise<string | null> {
+  for (const rev of [`refs/heads/${ref}`, ref, `refs/remotes/origin/${ref}`]) {
+    const resolved = await runGit(['rev-parse', '--verify', '--quiet', `${rev}^{commit}`])
+    const sha = resolved.stdout.trim()
+    if (resolved.code === 0 && /^[0-9a-f]{40,64}$/.test(sha)) return sha
+  }
+  return null
+}
+
+/**
+ * `server update --ref <ref>` onto code that predates the Ficus rename would run it on settings it
+ * cannot read (it reads TAU_ only). Refuse before the checkout, and name the way back: the
+ * byte-for-byte backups the rename took. `rev` is what is checked out (`FETCH_HEAD` for a sha).
  */
 async function refuseDowngradePastRename(
   root: string,
   runGit: (argv: string[]) => ReturnType<Runner>,
   ref: string,
-  target: () => Promise<string>
+  rev: string
 ): Promise<void> {
   if (!installUsesFicusEnv(root)) return
-  const shown = await runGit(['show', `${await target()}:package.json`])
+  const commit = await checkoutCommit(runGit, rev)
+  if (!commit) return
+  const shown = await runGit(['show', `${commit}:package.json`])
   if (shown.code !== 0) return
   let name: unknown
   try {
@@ -96,7 +118,9 @@ export interface OfflineUpdateArgs {
  * branch/tag/commit, then run the CHECKOUT's own `bun run update:offline` and
  * restart the supervisor recorded for the instance, worker first and API last.
  */
-export async function runOfflineUpdate(args: OfflineUpdateArgs): Promise<{ before: string; after: string }> {
+export async function runOfflineUpdate(
+  args: OfflineUpdateArgs
+): Promise<{ before: string; after: string; warnings?: string[] }> {
   const { root, runner, log } = args
   // A TAU_/FICUS_ secret conflict would stop the rename below after the pull and the build:
   // refuse it now, while the checkout is still where it was.
@@ -126,7 +150,7 @@ export async function runOfflineUpdate(args: OfflineUpdateArgs): Promise<{ befor
     // CI and operators may pin an exact commit. FETCH_HEAD avoids inventing a
     // persistent local ref for it.
     await git(['fetch', '--no-tags', 'origin', args.ref])
-    await refuseDowngradePastRename(root, runGit, args.ref, async () => 'FETCH_HEAD')
+    await refuseDowngradePastRename(root, runGit, args.ref, 'FETCH_HEAD')
     await git(['checkout', '--recurse-submodules', 'FETCH_HEAD'])
   } else {
     const validation = await runGit(['check-ref-format', '--branch', args.ref])
@@ -161,13 +185,7 @@ export async function runOfflineUpdate(args: OfflineUpdateArgs): Promise<{ befor
     } else {
       throw new Error(`ref ${args.ref} was not found on origin`)
     }
-    const ref = args.ref
-    await refuseDowngradePastRename(root, runGit, ref, async () => {
-      if (refs.has(tagRef)) return tagRef
-      // `git checkout <branch>` takes an existing local branch as it is, else the fetched one.
-      const local = await runGit(['show-ref', '--verify', '--quiet', branchRef])
-      return local.code === 0 ? branchRef : `refs/remotes/origin/${ref}`
-    })
+    await refuseDowngradePastRename(root, runGit, args.ref, args.ref)
     await git(['checkout', '--recurse-submodules', args.ref])
   }
   const after = (await git(['rev-parse', 'HEAD'])).trim()
@@ -184,9 +202,10 @@ export async function runOfflineUpdate(args: OfflineUpdateArgs): Promise<{ befor
   // Ficus rename, after the build and before the restart: the checkout's package name (now the
   // updated one) says whether its code reads FICUS_. The build and migration read the file as it
   // was (the new code bridges TAU_ in-process), so a failed update never leaves it renamed.
-  await migrateCheckoutEnv(root, { log })
+  const { warnings } = await migrateCheckoutEnv(root, { log })
 
   log(`Restarting under ${args.context.supervisor}`)
   await restartSupervisor(args.context)
-  return { before, after }
+  // The warnings also ride in the --json document (applyUpdate spreads this result into it).
+  return warnings.length > 0 ? { before, after, warnings } : { before, after }
 }
