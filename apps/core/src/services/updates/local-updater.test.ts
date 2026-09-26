@@ -1,14 +1,16 @@
 import { randomUUID } from 'crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { localProcessNames } from '@ficus/shared'
 import { CommandRunner } from './command-runner'
 import {
   LocalUpdateManager,
   UpdateLockedError,
   DirtyWorktreeError,
   UnsupportedDeploymentError,
+  defaultLocalInstallEnv,
   sandboxRuntimeRestartBlocker,
 } from './local-updater'
 import { acquireUpdateRunLock } from './run-lock'
@@ -869,5 +871,183 @@ describe('LocalUpdateManager sandbox-runtime preflight', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+// Ficus rename (Task 10): the updater hard-renames a local install's TAU_
+// settings to FICUS_ before its restart commands run, and puts the files back
+// byte-for-byte when the update fails, so the old processes restart on exactly
+// the configuration they had.
+describe('LocalUpdateManager local-install env rename', () => {
+  const CORE_CHANGE = {
+    'status --porcelain': '',
+    'rev-parse HEAD': 'a',
+    'rev-parse origin/main': 'b',
+    'diff --name-only a b': 'apps/core/src/index.ts',
+  }
+  const LEGACY_ENV = 'TAU_ENCRYPTION_KEY=' + 'ab'.repeat(32) + '\nTAU_SANDBOX_RUNTIME=host\nTAU_PASSWORD=real\n'
+  const RENAMED_ENV = 'FICUS_ENCRYPTION_KEY=' + 'ab'.repeat(32) + '\nFICUS_SANDBOX_RUNTIME=host\nFICUS_PASSWORD=real\n'
+  // The default instance's pm2 name: phase-5 identity, unchanged by the rename.
+  const API = localProcessNames('tau').api
+  const LEGACY_ECOSYSTEM = `module.exports = { apps: [{ name: '${API}', env: {\n  TAU_PM2_API_NAME: '${API}',\n} }] }\n`
+  let dir: string
+  beforeEach(() => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'ficus-update-env-')))
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'ficus' }))
+    writeFileSync(join(dir, '.env'), LEGACY_ENV)
+    writeFileSync(join(dir, 'ecosystem.config.js'), LEGACY_ECOSYSTEM)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+  const backups = () => readdirSync(dir).filter((name) => name.includes('.pre-ficus-'))
+
+  it('renames .env and ecosystem.config.js before the build and restart commands run', async () => {
+    const seen: string[] = []
+    const { updater } = manager({
+      repoRoot: dir,
+      statusPath: join(dir, 'status.json'),
+      commandRunner: {
+        runAll: async () => {
+          seen.push(readFileSync(join(dir, '.env'), 'utf8'))
+        },
+      },
+      gitResponses: CORE_CHANGE,
+    })
+    const run = await updater.apply({ manual: true })
+    expect(run.status).toBe('succeeded')
+    expect(seen).toEqual([RENAMED_ENV])
+    expect(readFileSync(join(dir, 'ecosystem.config.js'), 'utf8')).toContain(`FICUS_PM2_API_NAME: '${API}',`)
+    expect(backups()).toHaveLength(2)
+  })
+
+  it('a failed update calls restoreLocalInstallEnv and leaves .env byte-identical to before', async () => {
+    const before = readFileSync(join(dir, '.env'))
+    const ecosystemBefore = readFileSync(join(dir, 'ecosystem.config.js'))
+    const restored: string[][] = []
+    const { updater } = manager({
+      repoRoot: dir,
+      statusPath: join(dir, 'status.json'),
+      commandRunner: {
+        runAll: async () => {
+          // The build ran against the renamed files, then failed.
+          expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(RENAMED_ENV)
+          throw new Error('bun run build:core exited with 1')
+        },
+      },
+      localInstallEnv: {
+        ...defaultLocalInstallEnv,
+        restore: async (paths: string[]) => {
+          restored.push(paths)
+          await defaultLocalInstallEnv.restore(paths)
+        },
+      },
+      gitResponses: CORE_CHANGE,
+    })
+    await expect(updater.apply({ manual: true })).rejects.toThrow('build:core')
+    expect(restored).toEqual([
+      [
+        join(dir, backups().find((b) => b.startsWith('.env.'))!),
+        join(dir, backups().find((b) => b.startsWith('ecosystem.'))!),
+      ],
+    ])
+    expect(readFileSync(join(dir, '.env')).equals(before)).toBe(true)
+    expect(readFileSync(join(dir, 'ecosystem.config.js')).equals(ecosystemBefore)).toBe(true)
+    expect(updater.status().latest?.status).toBe('failed')
+  })
+
+  it('a failed targeted rebuild restores the files too', async () => {
+    const before = readFileSync(join(dir, '.env'))
+    const { updater } = manager({
+      repoRoot: dir,
+      statusPath: join(dir, 'status.json'),
+      commandRunner: {
+        runAll: async () => {
+          throw new Error('bun run build:core exited with 1')
+        },
+      },
+      gitResponses: CORE_CHANGE,
+    })
+    updater.applyInBackground({ manual: true, tasks: ['core'] })
+    await waitUntilInactive(updater)
+    expect(updater.status().latest?.status).toBe('failed')
+    expect(readFileSync(join(dir, '.env')).equals(before)).toBe(true)
+  })
+
+  it('refuses conflicting protected values before the merge, naming the key and not the values', async () => {
+    const conflicting = 'TAU_PASSWORD=first-secret\nFICUS_PASSWORD=second-secret\n'
+    writeFileSync(join(dir, '.env'), conflicting)
+    let ran = false
+    const { updater, calls } = manager({
+      repoRoot: dir,
+      statusPath: join(dir, 'status.json'),
+      commandRunner: {
+        runAll: async () => {
+          ran = true
+        },
+      },
+      gitResponses: CORE_CHANGE,
+    })
+    const error = (await updater.apply({ manual: true }).catch((e: unknown) => e)) as Error
+    expect(error.message).toContain('TAU_PASSWORD')
+    expect(error.message).toContain('remove the wrong value, then re-run')
+    expect(error.message).not.toContain('first-secret')
+    expect(error.message).not.toContain('second-secret')
+    expect(ran).toBe(false)
+    expect(calls.some((cmd) => cmd.includes('merge'))).toBe(false)
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(conflicting)
+    expect(backups()).toEqual([])
+    expect(updater.status().latest?.status).toBe('failed')
+  })
+
+  it('leaves a systemd host alone: the setup toolkit owns that rename', async () => {
+    const { updater } = manager({
+      repoRoot: dir,
+      statusPath: join(dir, 'status.json'),
+      flavor: () => SYSTEMD_FLAVOR,
+      gitResponses: CORE_CHANGE,
+    })
+    expect((await updater.apply({ manual: true })).status).toBe('succeeded')
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(LEGACY_ENV)
+    expect(backups()).toEqual([])
+  })
+
+  it('keeps both errors when restoring after a failed update fails too', async () => {
+    const { updater } = manager({
+      repoRoot: dir,
+      statusPath: join(dir, 'status.json'),
+      commandRunner: {
+        runAll: async () => {
+          throw new Error('bun run build:core exited with 1')
+        },
+      },
+      localInstallEnv: {
+        ...defaultLocalInstallEnv,
+        restore: async () => {
+          throw new Error('EACCES: permission denied')
+        },
+      },
+      gitResponses: CORE_CHANGE,
+    })
+    const error = (await updater.apply({ manual: true }).catch((e: unknown) => e)) as AggregateError
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error.errors[0] as Error).message).toBe('bun run build:core exited with 1')
+    expect((error.errors[1] as Error).message).toBe('EACCES: permission denied')
+    expect(updater.status().latest?.error).toContain('bun run build:core exited with 1')
+    expect(updater.status().latest?.error).toContain('EACCES: permission denied')
+  })
+
+  it('fails closed on a checkout whose package name it cannot read', async () => {
+    rmSync(join(dir, 'package.json'))
+    const { updater } = manager({ repoRoot: dir, statusPath: join(dir, 'status.json'), gitResponses: CORE_CHANGE })
+    expect((await updater.apply({ manual: true })).status).toBe('succeeded')
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(LEGACY_ENV)
+    expect(backups()).toEqual([])
+  })
+
+  it('leaves a checkout that still predates the rename alone after the merge', async () => {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'tau' }))
+    const { updater } = manager({ repoRoot: dir, statusPath: join(dir, 'status.json'), gitResponses: CORE_CHANGE })
+    expect((await updater.apply({ manual: true })).status).toBe('succeeded')
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(LEGACY_ENV)
+    expect(backups()).toEqual([])
   })
 })

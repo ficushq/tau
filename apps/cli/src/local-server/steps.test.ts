@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test'
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { EnvPrefixConflictError } from '@ficus/shared/legacy-env'
 import { mergeEnvFile, parseEnvFile } from './env-file'
 import { generateEcosystem, instanceNames } from './instance'
 import { recordingRunner } from './runner'
@@ -349,6 +350,118 @@ describe('the env step', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+  // Task 8 review carry: the TAU_ → FICUS_ rename must happen BEFORE the merge
+  // writes .env. Merged first, a regenerated FICUS_PASSWORD would be appended
+  // beside the real TAU_PASSWORD and win over it.
+  describe('on a .env that predates the Ficus rename', () => {
+    const legacy =
+      'TAU_ENCRYPTION_KEY=' +
+      'cd'.repeat(32) +
+      '\nTAU_INTERNAL_EVENT_TOKEN=event-token\nTAU_PASSWORD=real-password\nTAU_SANDBOX_RUNTIME=host\nPORT=3000\n'
+    const fresh = { hex32: () => 'ee'.repeat(32), token: () => 'regenerated-password' }
+    /** A checkout whose package.json is named "ficus": only its code reads FICUS_. */
+    const ficusFixture = () => {
+      const made = fixture()
+      writeFileSync(join(made.root, 'package.json'), JSON.stringify({ name: 'ficus' }))
+      return made
+    }
+
+    it('renames it before merging, so the existing secrets survive and no FICUS_ twin is appended', async () => {
+      const { root, deps } = ficusFixture()
+      try {
+        writeFileSync(join(root, '.env'), legacy)
+        await stepOf(opts({ root }), { ...deps, secrets: fresh }).run()
+        const after = readFileSync(join(root, '.env'), 'utf8')
+        expect(after).not.toMatch(/^TAU_/m)
+        expect(after.match(/^FICUS_PASSWORD=.*$/gm)).toEqual(['FICUS_PASSWORD=real-password'])
+        expect(after.match(/^FICUS_ENCRYPTION_KEY=.*$/gm)).toEqual([`FICUS_ENCRYPTION_KEY=${'cd'.repeat(32)}`])
+        expect(after.match(/^FICUS_INTERNAL_EVENT_TOKEN=.*$/gm)).toEqual(['FICUS_INTERNAL_EVENT_TOKEN=event-token'])
+        expect(after).not.toContain('regenerated-password')
+        expect(after).not.toContain('ee'.repeat(32))
+        const backups = readdirSync(root).filter((name) => name.startsWith('.env.pre-ficus-'))
+        expect(backups).toHaveLength(1)
+        expect(readFileSync(join(root, backups[0]), 'utf8')).toBe(legacy)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('plans against the renamed text: no generated secret, and the rename is announced', () => {
+      const { root, deps } = ficusFixture()
+      try {
+        writeFileSync(join(root, '.env'), legacy)
+        const plan = stepOf(opts({ root }), deps).plan()
+        expect(plan[0]).toBe('rename TAU_ settings to FICUS_ in .env (byte-for-byte backup .env.pre-ficus-<UTC time>)')
+        expect(plan.join('\n')).not.toContain('FICUS_PASSWORD')
+        expect(plan.join('\n')).not.toContain('FICUS_ENCRYPTION_KEY')
+        // Planning writes nothing.
+        expect(readFileSync(join(root, '.env'), 'utf8')).toBe(legacy)
+        expect(readdirSync(root).some((name) => name.includes('.pre-ficus-'))).toBe(false)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('stops on conflicting passwords before writing anything, naming the key and not the values', async () => {
+      const { root, deps } = ficusFixture()
+      try {
+        const conflicting = 'TAU_PASSWORD=first-secret\nFICUS_PASSWORD=second-secret\n'
+        writeFileSync(join(root, '.env'), conflicting)
+        const error = (await stepOf(opts({ root }), deps)
+          .run()
+          .catch((e: unknown) => e)) as Error
+        expect(error).toBeInstanceOf(EnvPrefixConflictError)
+        expect(error.message).toContain('TAU_PASSWORD')
+        expect(error.message).toContain('remove the wrong value, then re-run')
+        expect(error.message).not.toContain('first-secret')
+        expect(error.message).not.toContain('second-secret')
+        expect(readFileSync(join(root, '.env'), 'utf8')).toBe(conflicting)
+        expect(readdirSync(root).some((name) => name.includes('.pre-ficus-'))).toBe(false)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('renames the ecosystem.config.js PM2 name keys of an existing pm2 install too', async () => {
+      const { root, deps } = ficusFixture()
+      try {
+        writeFileSync(join(root, '.env'), legacy)
+        const oldEcosystem = readFileSync(join(REPO_ROOT, 'ecosystem.config.example.js'), 'utf8').replace(
+          /\bFICUS_/g,
+          'TAU_'
+        )
+        writeFileSync(join(root, 'ecosystem.config.js'), oldEcosystem)
+        await stepOf(opts({ root }), deps).run()
+        const ecosystem = readFileSync(join(root, 'ecosystem.config.js'), 'utf8')
+        expect(ecosystem).toContain(`FICUS_PM2_API_NAME: '${instanceNames('tau').api}',`)
+        // Ruling 28: only the generated PM2 name lines move; the bridge reads the other keys.
+        expect(ecosystem).toBe(
+          oldEcosystem
+            .replace('TAU_PM2_API_NAME', 'FICUS_PM2_API_NAME')
+            .replace('TAU_PM2_WORKER_NAME', 'FICUS_PM2_WORKER_NAME')
+        )
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('fails closed: renames nothing, and says so, when the package name is not "ficus"', async () => {
+      const { root, deps, logs } = fixture()
+      try {
+        writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'something-else' }))
+        writeFileSync(join(root, '.env'), legacy)
+        await stepOf(opts({ root }), deps).run()
+        expect(readFileSync(join(root, '.env'), 'utf8')).toMatch(/^TAU_PASSWORD=real-password$/m)
+        expect(readdirSync(root).some((name) => name.includes('.pre-ficus-'))).toBe(false)
+        expect(logs).toContain(
+          `warning: TAU_ settings in ${root} were not renamed to FICUS_: its package.json is named "something-else", not "ficus"`
+        )
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+  })
+
   it('says nothing when the checkout already carries its label', async () => {
     const { root, deps, logs } = fixture()
     try {

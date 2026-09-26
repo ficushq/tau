@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { Command } from 'commander'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { isJsonMode, output, outputError, setOutputOptions } from '../output'
@@ -161,6 +171,89 @@ describe('tau server', () => {
       'bunx pm2 restart tau-worker --update-env',
       'bunx pm2 restart tau-api --update-env',
     ])
+  })
+  describe('on a Ficus checkout whose .env predates the rename', () => {
+    const legacy =
+      'TAU_SANDBOX_RUNTIME=host\nTAU_PASSWORD=real-password\nDATABASE_URL=postgres://u:p@db.example:5432/x\n'
+    const renamed =
+      'FICUS_SANDBOX_RUNTIME=host\nFICUS_PASSWORD=real-password\nDATABASE_URL=postgres://u:p@db.example:5432/x\n'
+    beforeEach(() => {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'ficus' }))
+      writeFileSync(join(root, '.env'), legacy)
+    })
+    /** A runner that remembers what .env said when the first supervisor command ran. */
+    function watching() {
+      const rec = recordingRunner({ 'bunx pm2 jlist': { stdout: '[]' } })
+      const seen: { env?: string } = {}
+      const runner: typeof rec.runner = async (command, options) => {
+        if (command[0] === 'bunx' && seen.env === undefined) seen.env = readFileSync(join(root, '.env'), 'utf8')
+        return rec.runner(command, options)
+      }
+      return { runner, seen, calls: rec.calls }
+    }
+    const backups = () => readdirSync(root).filter((name) => name.includes('.pre-ficus-'))
+
+    for (const verb of ['start', 'restart']) {
+      it(`${verb} renames TAU_ settings to FICUS_ before any process starts`, async () => {
+        const { runner, seen } = watching()
+        const { run } = make({}, { runner })
+        await run(['server', verb])
+        expect(outputError).not.toHaveBeenCalled()
+        expect(seen.env).toBe(renamed)
+        expect(backups()).toHaveLength(1)
+        expect(readFileSync(join(root, backups()[0]), 'utf8')).toBe(legacy)
+      })
+      it(`${verb} stops on conflicting passwords without touching a file or starting anything`, async () => {
+        const conflicting = 'TAU_PASSWORD=first-secret\nFICUS_PASSWORD=second-secret\n'
+        writeFileSync(join(root, '.env'), conflicting)
+        const { runner, calls } = watching()
+        const { run } = make({}, { runner })
+        await run(['server', verb])
+        expect(calls).toEqual([])
+        const [error] = (outputError as ReturnType<typeof mock>).mock.calls.at(-1) as [Error]
+        expect(error.message).toContain('TAU_PASSWORD')
+        expect(error.message).toContain('remove the wrong value, then re-run')
+        expect(error.message).not.toContain('first-secret')
+        expect(error.message).not.toContain('second-secret')
+        expect(readFileSync(join(root, '.env'), 'utf8')).toBe(conflicting)
+        expect(backups()).toEqual([])
+      })
+    }
+    // M4. start/restart only reach a registered checkout (package.json "tau" or "ficus"), so the
+    // warning a --json run must carry here is the rename's own: a PM2 name line it left alone.
+    it('reports what the rename left alone in the --json document instead of on stdout', async () => {
+      writeFileSync(
+        join(root, 'ecosystem.config.js'),
+        "module.exports = { apps: [{ env: {\n  TAU_PM2_API_NAME:\n    'x',\n} }] }\n"
+      )
+      const warning =
+        "TAU_PM2_API_NAME in ecosystem.config.js was not renamed to FICUS_PM2_API_NAME: it is not a single `TAU_PM2_API_NAME: '<name>',` line; rename it by hand"
+      for (const verb of ['start', 'restart']) {
+        const { runner } = watching()
+        const { run } = make({}, { runner })
+        const printed: string[] = []
+        const realLog = console.log
+        console.log = (line?: unknown) => void printed.push(String(line))
+        ;(isJsonMode as ReturnType<typeof mock>).mockReturnValue(true)
+        try {
+          await run(['server', verb])
+        } finally {
+          console.log = realLog
+          ;(isJsonMode as ReturnType<typeof mock>).mockReturnValue(false)
+        }
+        const [data] = (output as ReturnType<typeof mock>).mock.calls.at(-1) as [Record<string, unknown>]
+        expect(data.warnings).toEqual([warning])
+        expect(printed.some((line) => line.includes('not renamed'))).toBe(false)
+      }
+    })
+    it('start leaves a checkout that predates the rename alone: its code reads TAU_', async () => {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'tau' }))
+      const { runner } = watching()
+      const { run } = make({}, { runner })
+      await run(['server', 'start'])
+      expect(readFileSync(join(root, '.env'), 'utf8')).toBe(legacy)
+      expect(backups()).toEqual([])
+    })
   })
   it('start and restart warn when the built web bundle was made for a different base path', async () => {
     writeFileSync(
@@ -616,6 +709,11 @@ describe('tau server', () => {
       'git check-ref-format --branch v1',
       'git ls-remote --refs --exit-code origin refs/heads/v1 refs/tags/v1',
       'git fetch --no-tags origin refs/tags/v1:refs/tags/v1',
+      // The install already reads FICUS_: resolve what checkout lands on, the way checkout does,
+      // to make sure it does not predate the rename (nothing resolves in this fixture).
+      'git rev-parse --verify --quiet refs/heads/v1^{commit}',
+      'git rev-parse --verify --quiet v1^{commit}',
+      'git rev-parse --verify --quiet refs/remotes/origin/v1^{commit}',
       'git checkout --recurse-submodules v1',
       'git rev-parse HEAD',
       'bun run update:offline -- --from ' + sha,

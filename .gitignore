@@ -21,6 +21,11 @@ vite.config.d.ts
 vite.config.js
 data/
 ecosystem.config.js
+# the Ficus rename's byte-for-byte backups and an interrupted rewrite's temp file
+# (.env's backups are covered by .env.* above); untracked, they would dirty the tree
+# and block `server update` and the in-app updater
+ecosystem.config.js.pre-ficus-*
+*.ficus-tmp-*
 vapid.json
 google-cloud-tts-service-account.json
 .worktrees/
