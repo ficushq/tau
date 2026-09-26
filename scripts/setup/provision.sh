@@ -281,6 +281,15 @@ FORWARD_ENVS+=('FICUS_SETUP_RESTORE_URL' 'FICUS_SETUP_RESTORE_PASSPHRASE' 'FICUS
 while IFS= read -r core_env_forward_name; do
   [[ -n ${core_env_forward_name} ]] && FORWARD_ENVS+=("${core_env_forward_name}")
 done <<<"${CORE_ENV_FORWARD_NAMES}"
+# One release (Ficus rename): forward each FICUS_ input's pre-rename TAU_
+# spelling as well — the push loop skips names that are unset here, and
+# setup-host.sh reads either spelling of its *_SETUP_* inputs.
+for forward_name in "${FORWARD_ENVS[@]}"; do
+  if [[ ${forward_name} == FICUS_?* ]]; then
+    FORWARD_ENVS+=("TAU_${forward_name#FICUS_}")
+  fi
+done
+unset forward_name
 
 REMOTE_CMD="set -a; [ -f ${REMOTE_DIR}/secrets.env ] && . ${REMOTE_DIR}/secrets.env; set +a; bash ${REMOTE_DIR}/setup-host.sh --config ${REMOTE_DIR}/tau-setup.yaml"
 

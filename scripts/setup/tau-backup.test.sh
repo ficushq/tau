@@ -255,6 +255,47 @@ unset -f curl
 expect_eq 'ordinary nightly upload sends no termination metadata' \
   "$([[ $(cat "${CURL_ARGS_LOG}") == *'x-amz-meta-tau-termination-backup-effect-id'* ]] && echo leaked || echo absent)" 'absent'
 
+# The control plane sends the effect id under BOTH names for one release (the
+# installed copy may predate the Ficus rename): this template reads the
+# FICUS_ one, and a TAU_ one passed alongside it changes nothing.
+OTHER_EFFECT_ID='99999999-e89b-42d3-a456-426614174000'
+: >"${CURL_ARGS_LOG}"
+curl() {
+  printf '%q ' "$@" >>"${CURL_ARGS_LOG}"
+  printf '\n' >>"${CURL_ARGS_LOG}"
+  local a url=''
+  for a in "$@"; do url=${a}; done
+  [[ ${url} == *'list-type=2'* ]] && printf '<ListBucketResult></ListBucketResult>'
+  return 0
+}
+export -f curl
+FICUS_TERMINATION_BACKUP_EFFECT_ID="${EFFECT_ID}" TAU_TERMINATION_BACKUP_EFFECT_ID="${OTHER_EFFECT_ID}" \
+  FICUS_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
+  FICUS_BACKUP_WORKDIR="${SCRATCH}/dual-effect-work" \
+  "${RENDERED}" >/dev/null 2>"${SCRATCH}/dual-effect.stderr"
+unset -f curl
+expect_eq 'termination backup honours FICUS_TERMINATION_BACKUP_EFFECT_ID when both names are sent' \
+  "$([[ $(cat "${CURL_ARGS_LOG}") == *"tenants/test/terminations/${EFFECT_ID}.tar.gz.enc"* ]] && echo yes || echo no)" 'yes'
+expect_eq 'termination backup ignores the TAU_ name passed alongside it' \
+  "$([[ $(cat "${CURL_ARGS_LOG}") == *"${OTHER_EFFECT_ID}"* ]] && echo leaked || echo ignored)" 'ignored'
+: >"${CURL_ARGS_LOG}"
+curl() {
+  printf '%q ' "$@" >>"${CURL_ARGS_LOG}"
+  printf '\n' >>"${CURL_ARGS_LOG}"
+  local a url=''
+  for a in "$@"; do url=${a}; done
+  [[ ${url} == *'list-type=2'* ]] && printf '<ListBucketResult></ListBucketResult>'
+  return 0
+}
+export -f curl
+TAU_TERMINATION_BACKUP_EFFECT_ID="${OTHER_EFFECT_ID}" \
+  FICUS_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \
+  FICUS_BACKUP_WORKDIR="${SCRATCH}/tau-only-effect-work" \
+  "${RENDERED}" >/dev/null 2>"${SCRATCH}/tau-only-effect.stderr" # legacy-env
+unset -f curl
+expect_eq 'a TAU_ effect id alone is ignored: an ordinary dated upload' \
+  "$([[ $(cat "${CURL_ARGS_LOG}") == *'/terminations/'* ]] && echo termination || echo ordinary)" 'ordinary'
+
 malformed_rc=0
 FICUS_TERMINATION_BACKUP_EFFECT_ID='../other' \
   FICUS_BACKUP_PG_DUMP_CMD="${FAKE_PG_DUMP}" \

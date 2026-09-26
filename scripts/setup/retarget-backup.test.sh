@@ -247,6 +247,11 @@ backup:
   schedule: '03:15'
 EOF
 
+# The host's core .env, renamed to FICUS_* (the Ficus rename): retarget-backup.sh
+# reads and writes FICUS_ names only and refuses a host still on TAU_ ones.
+CORE_ENV="${SCRATCH}/core/.env"
+printf 'FICUS_ENCRYPTION_KEY=k\nFICUS_SANDBOX_RUNTIME=host\n' >"${CORE_ENV}"
+
 SECRETS="${SCRATCH}/secrets.env"
 write_secrets() { # ACCESS SECRET — always a fresh file (owner = this user)
   rm -f "${SECRETS}"
@@ -305,6 +310,27 @@ run() { # ...ARGS — sets RC and OUT (stdout+stderr)
 reset_fixture
 
 # =============================================================================
+# a host that was never renamed (Ficus): refused before anything is written
+# =============================================================================
+# All three live files get an old mtime first, so any write — even one that
+# rewrote the same bytes — would show.
+printf 'TAU_ENCRYPTION_KEY=k\nTAU_SANDBOX_RUNTIME=host\n' >"${CORE_ENV}" # legacy-env
+touch -d '2001-01-01 00:00:00' "${BACKUP_SCRIPT_PATH}" "${BACKUP_ENV_TARGET}" "${CONFIG}"
+mtimes() { stat -c %Y "${BACKUP_SCRIPT_PATH}" "${BACKUP_ENV_TARGET}" "${CONFIG}" 2>/dev/null || stat -f %m "${BACKUP_SCRIPT_PATH}" "${BACKUP_ENV_TARGET}" "${CONFIG}"; }
+before_mtimes=$(mtimes)
+for mode in real --dry-run; do
+  if [[ ${mode} == real ]]; then run "${ARGS[@]}"; else run "${ARGS[@]}" --dry-run; fi
+  expect_eq "TAU host (${mode}): exits 1" "${RC}" 1
+  expect_contains "TAU host (${mode}): says why" "${OUT}" 'this host still uses TAU_* settings — upgrade it to the Ficus Core release first'
+  expect_eq "TAU host (${mode}): no file was written (mtimes unchanged)" "$(mtimes)" "${before_mtimes}"
+  expect_not_contains "TAU host (${mode}): prints no RESULT marker" "${OUT}" 'FICUS_RETARGET_BACKUP_RESULT='
+  expect_eq "TAU host (${mode}): the S3 check never ran" "$(grep -c '^curl ' "${SHIM_LOG}" || true)" 0
+done
+assert_untouched 'TAU host'
+printf 'FICUS_ENCRYPTION_KEY=k\nFICUS_SANDBOX_RUNTIME=host\n' >"${CORE_ENV}"
+reset_fixture
+
+# =============================================================================
 # --dry-run (any user)
 # =============================================================================
 run "${ARGS[@]}" --dry-run
@@ -323,6 +349,12 @@ expect_contains '--dry-run plans the yaml bucket' "${OUT}" "backup.s3_bucket: ${
 expect_contains '--dry-run names what stays untouched' "${OUT}" 'tau-backup.timer / tau-backup.service (schedule)'
 assert_no_secrets '--dry-run' "${OUT}"
 dry_stdout=$("${RETARGET}" "${ARGS[@]}" --dry-run 2>/dev/null)
+# Each marker on its own line, each findable by its own full name (the
+# multi-marker printf used to hide the last two behind `\n`).
+for marker in ENDPOINT REGION BUCKET; do
+  expect_eq "--dry-run emits FICUS_RETARGET_BACKUP_${marker}= on its own line" \
+    "$(grep -c "^FICUS_RETARGET_BACKUP_${marker}=" <<<"${dry_stdout}")" '1'
+done
 expect_eq '--dry-run ends stdout with the result markers' "$(tail -n 4 <<<"${dry_stdout}")" \
   "FICUS_RETARGET_BACKUP_RESULT=dry-run
 FICUS_RETARGET_BACKUP_ENDPOINT=${NEW_ENDPOINT}

@@ -163,7 +163,7 @@ describe('checkMigrationSafety', () => {
     const setupLibrary = readFileSync(join(MONOREPO_ROOT, 'scripts/setup/lib.sh'), 'utf8')
     const migrationFunction = setupLibrary.match(/run_db_migrations\(\)[\s\S]*?^}/m)?.[0]
 
-    expect(migrationFunction).toContain('FICUS_MIGRATE_LIVE=1 bun run db:migrate')
+    expect(migrationFunction).toContain('FICUS_MIGRATE_LIVE=1 TAU_MIGRATE_LIVE=1 bun run db:migrate')
   })
 })
 

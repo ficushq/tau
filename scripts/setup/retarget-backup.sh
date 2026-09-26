@@ -173,8 +173,11 @@ unset _flag _var
 emit_result() { # RESULT
   printf 'FICUS_RETARGET_BACKUP_RESULT=%s\n' "$1"
   [[ $1 == not-applicable ]] && return 0
-  printf 'FICUS_RETARGET_BACKUP_ENDPOINT=%s\nFICUS_RETARGET_BACKUP_REGION=%s\nFICUS_RETARGET_BACKUP_BUCKET=%s\n' \
-    "${ENDPOINT}" "${REGION}" "${BUCKET}"
+  # One printf per marker: a multi-marker format string hides the later names
+  # behind `\n` from every grep of this file (the Ficus rename's blind spot).
+  printf 'FICUS_RETARGET_BACKUP_ENDPOINT=%s\n' "${ENDPOINT}"
+  printf 'FICUS_RETARGET_BACKUP_REGION=%s\n' "${REGION}"
+  printf 'FICUS_RETARGET_BACKUP_BUCKET=%s\n' "${BUCKET}"
 }
 
 # ============================================================== validate
@@ -220,6 +223,13 @@ else
 fi
 cfg_load "${CONFIG}"
 
+# This script reads and writes FICUS_* names only (backup.env, tau-backup.sh).
+# A host whose settings were never renamed (still on a pre-Ficus Core) is
+# refused before any live file is read or written — the tenant upgrade
+# renames it first.
+SRC_DEST=$(cfg_source_dest) || die "could not read source.dest from ${CONFIG}"
+require_host_env_prefix FICUS "${SRC_DEST}/.env"
+
 # Captured first, never inside [[ … ]]: a die() in a command substitution only
 # ends that subshell, so `[[ $(cfg_bool …) != true ]]` would read an invalid
 # value or a yq failure as "not enabled" and exit 3 instead of failing.
@@ -236,40 +246,11 @@ TEMPLATE="${SCRIPT_DIR}/tau-backup.sh.tmpl"
 
 # The live tau-backup.sh: the non-S3 values it was rendered with are carried
 # over verbatim (re-deriving them would need setup-host.sh's whole config,
-# secrets included). Each is a `NAME='value'` line near the top, as the
-# template writes them.
+# secrets included) — lib.sh's backup_script_read_values, shared with the
+# env rename's re-render.
 [[ -f ${BACKUP_SCRIPT_PATH} ]] ||
   die "${BACKUP_SCRIPT_PATH} not found, but backup.enabled is true — setup-host.sh's phase_backup never completed on this host; re-run it rather than retargeting"
-read_file_exact "${BACKUP_SCRIPT_PATH}" LIVE_SCRIPT || die "could not read ${BACKUP_SCRIPT_PATH}"
-LIVE_TOKENS='DEST HOME_DIR DB_MODE DB_CONTAINER S3_ENDPOINT S3_REGION S3_BUCKET S3_PREFIX BACKUP_ENV_FILE'
-_found=' '
-_rest=${LIVE_SCRIPT}
-while [[ -n ${_rest} ]]; do
-  _line=${_rest%%$'\n'*}
-  if [[ ${_line} == "${_rest}" ]]; then _rest=''; else _rest=${_rest#*$'\n'}; fi
-  if [[ ${_line} =~ ^([A-Z][A-Z0-9_]*)=\'([^\']*)\'$ ]] && [[ " ${LIVE_TOKENS} " == *" ${BASH_REMATCH[1]} "* ]] &&
-    [[ ${_found} != *" ${BASH_REMATCH[1]} "* ]]; then
-    printf -v "LIVE_${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
-    _found+="${BASH_REMATCH[1]} "
-  fi
-done
-for _tok in ${LIVE_TOKENS}; do
-  [[ ${_found} == *" ${_tok} "* ]] ||
-    die "${BACKUP_SCRIPT_PATH} has no ${_tok}='…' line — it was not rendered from a tau-backup.sh.tmpl this script understands; re-run setup-host.sh's phase_backup instead"
-done
-unset _found _rest _line _tok
-for _tok in DEST HOME_DIR DB_MODE S3_PREFIX BACKUP_ENV_FILE; do
-  _val="LIVE_${_tok}"
-  [[ -n ${!_val} ]] || die "${BACKUP_SCRIPT_PATH} has an empty ${_tok} — refusing to re-render it"
-done
-# Carried-over values go through the same sed program; refuse any it would
-# corrupt (the original render could not have produced one, so this means
-# the file was edited by hand).
-for _tok in DEST HOME_DIR DB_MODE DB_CONTAINER S3_PREFIX BACKUP_ENV_FILE; do
-  _val="LIVE_${_tok}"
-  [[ ${!_val} != *[\|\&\\]* ]] || die "${BACKUP_SCRIPT_PATH}'s ${_tok} contains '|', '&' or '\\' — refusing to re-render it"
-done
-unset _tok _val
+backup_script_read_values "${BACKUP_SCRIPT_PATH}"
 [[ ${LIVE_BACKUP_ENV_FILE} == "${BACKUP_ENV_TARGET}" ]] ||
   die "${BACKUP_SCRIPT_PATH} reads its secrets from ${LIVE_BACKUP_ENV_FILE}, not ${BACKUP_ENV_TARGET} — refusing to write a file it does not read"
 

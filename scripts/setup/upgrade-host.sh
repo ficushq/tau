@@ -41,6 +41,15 @@
 # upgrade of a git box CONVERTS it (the old checkout becomes
 # releases/git-<sha>, the rollback target). See lib.sh's `core release
 # artifacts` section for the box-side machinery.
+#
+# THE ENV RENAME (Ficus). The one time an upgrade rewrites the host's env
+# files is the upgrade onto the first release that reads FICUS_* (its
+# artifact.json says "envPrefix": "FICUS"; a git checkout's package.json is
+# named ficus): every TAU_* setting in <dest>/.env, managed.env, backup.env,
+# the config yaml's core.env, the core units and tau-backup.sh is renamed to
+# FICUS_*, after a byte-for-byte backup set, journaled, and restored if the
+# run fails, rolls back or is killed. See lib.sh's `env prefix rename`
+# section, and --restore-env-backup below for the manual way back.
 
 set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
@@ -50,6 +59,7 @@ source "${SCRIPT_DIR}/lib.sh"
 usage() {
   cat <<'EOF'
 Usage: upgrade-host.sh --config tau-setup.yaml [--ref REF]
+       upgrade-host.sh [--config tau-setup.yaml] --restore-env-backup SET
 
 Upgrades the tau instance ON THIS HOST to a source ref: source sync → build
 (core AND web) → migrations → service restart + health wait.
@@ -59,6 +69,13 @@ Options:
                   tau-setup.example.yaml). Only source.* and core.* are read.
   --ref REF       branch, tag or commit sha to move to. Defaults to the
                   config's source.ref.
+  --restore-env-backup SET
+                  put a Ficus env-rename backup set (a directory under
+                  /var/backups/ficus-env-rename) back byte for byte and exit —
+                  the way back before running an OLDER toolkit or Core on a
+                  renamed host. It also reverts any secret changed since that
+                  set was taken. A set taken during a git->artifact
+                  conversion re-renders the units, which needs --config.
   -h, --help      show this help
 
 Private-repo source.mode=git-https needs $GH_TOKEN in the environment (same as
@@ -72,7 +89,7 @@ artifact names its own commit). Any missing input = git mode.
 EOF
 }
 
-CONFIG='' REF_OVERRIDE=''
+CONFIG='' REF_OVERRIDE='' RESTORE_ENV_SET=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)
@@ -83,6 +100,10 @@ while [[ $# -gt 0 ]]; do
       REF_OVERRIDE=${2:?--ref needs a value}
       shift 2
       ;;
+    --restore-env-backup)
+      RESTORE_ENV_SET=${2:?--restore-env-backup needs a backup set directory}
+      shift 2
+      ;;
     -h | --help)
       usage
       exit 0
@@ -90,6 +111,39 @@ while [[ $# -gt 0 ]]; do
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
+
+# ====================================================== --restore-env-backup
+#
+# The manual way back from the Ficus env rename: put a backup set back (every
+# file verified against its MANIFEST sha256), clear the journal when it names
+# this set, and exit. Nothing else in this script runs.
+if [[ -n ${RESTORE_ENV_SET} ]]; then
+  [[ -d ${RESTORE_ENV_SET} ]] || die "--restore-env-backup: '${RESTORE_ENV_SET}' is not a directory"
+  RESTORE_ENV_SET=$(readlink -f -- "${RESTORE_ENV_SET}") || die "--restore-env-backup: could not resolve the set path"
+  if [[ -n ${CONFIG} ]]; then
+    [[ -f ${CONFIG} ]] || die "config file '${CONFIG}' not found"
+    ensure_yq
+    cfg_load "${CONFIG}"
+    SRC_DEST=$(cfg_source_dest) || die "could not read source.dest from ${CONFIG}"
+    # shellcheck disable=SC2034 # caller globals: lib.sh's render_core_unit reads them
+    RUN_USER=$(cfg_get '.core.run_user' "$(id -un)")
+    # shellcheck disable=SC2034
+    DB_MODE=$(cfg_get '.database.mode' 'container')
+    # shellcheck disable=SC2034
+    BUN_BIN=/usr/local/bin/bun
+  elif [[ -e ${RESTORE_ENV_SET}/UNITS_EXCLUDED ]]; then
+    die "--restore-env-backup: ${RESTORE_ENV_SET} was taken during a git->artifact conversion, so restoring it re-renders the core units — pass --config <the host's tau-setup.yaml> as well"
+  fi
+  require_root_capability
+  restore_rc=0
+  env_rename_backup_restore "${RESTORE_ENV_SET}" || restore_rc=$?
+  case ${restore_rc} in
+    0) log_info "restored the env files from ${RESTORE_ENV_SET}; any secret changed since that set was taken is reverted too" ;;
+    3) die "--restore-env-backup: ${RESTORE_ENV_SET} needs the unit templates next to this script (systemd/*.service.tmpl) — nothing was changed" ;;
+    *) die "--restore-env-backup: restoring ${RESTORE_ENV_SET} failed (see above)" ;;
+  esac
+  exit 0
+fi
 
 [[ -n ${CONFIG} ]] || {
   usage >&2
@@ -131,9 +185,11 @@ elif [[ -n ${FICUS_ARTIFACT_TARBALL_URL}${FICUS_ARTIFACT_MANIFEST_URL}${FICUS_AR
 fi
 
 # Only the source/core keys. Every secret-bearing section (database, backup,
-# ai, secrets) is deliberately NOT read: an upgrade rewrites no .env and needs
+# ai, secrets) is deliberately NOT read: an upgrade renders no .env and needs
 # no credential, which is what makes it runnable long after provisioning
-# without re-supplying anything.
+# without re-supplying anything. The one exception is the Ficus env rename
+# (see the header): it RENAMES the existing settings in place — no value is
+# read into this script, re-derived or re-generated.
 SRC_MODE=$(cfg_get '.source.mode' 'git-ssh')
 SRC_DEST=$(expand_tilde "$(cfg_get '.source.dest' '/opt/tau-core')")
 if [[ ${ARTIFACT_MODE} -eq 0 ]]; then
@@ -166,10 +222,24 @@ DB_MODE=$(cfg_get '.database.mode' 'container')
 # shellcheck disable=SC2034 # caller global: lib.sh's render_core_unit reads it
 BUN_BIN=/usr/local/bin/bun
 
+# ====================================================== env prefix (Ficus)
+#
+# First, before any preflight: a journaled env rename that an earlier run
+# left behind (killed, OOM, reboot) is made to match the release that is
+# serving right now — restored if it reads TAU_*, finished if it reads
+# FICUS_*. Then the traps that restore THIS run's rename if it fails, is
+# rolled back or is signalled (bash runs an EXIT trap with $?=0 on a signal,
+# hence the explicit TERM/HUP/INT ones).
+reconcile_rc=0
+env_prefix_reconcile || reconcile_rc=$?
+[[ ${reconcile_rc} -eq 0 ]] ||
+  die "a journaled env rename could not be reconciled (${reconcile_rc}) — push the complete toolkit (systemd/*.service.tmpl, tau-backup.sh.tmpl) and re-run"
+env_prefix_install_traps
+
 # ============================================================== artifact mode
 
 artifact_upgrade() {
-  local acq='' rc=0 sha digest12 tree release_dir before before_sha tmpl
+  local acq='' rc=0 sha digest12 tree release_dir before before_sha tmpl target_prefix conv_tree conv_prefix
 
   # The units must point at <dest>/current from this run onward. Forced rather
   # than inferred: on the very first conversion `releases/` may not exist yet
@@ -198,20 +268,25 @@ artifact_upgrade() {
     [[ -f ${SCRIPT_DIR}/systemd/${tmpl}.service.tmpl ]] ||
       die "missing ${SCRIPT_DIR}/systemd/${tmpl}.service.tmpl — an artifact upgrade re-renders the systemd units, so the caller must push scripts/setup/systemd/*.service.tmpl to the box alongside lib.sh and upgrade-host.sh"
   done
+  # The env rename re-renders an installed tau-backup.sh from its template
+  # (the old copy reads the pre-rename backup names), so the template must
+  # travel with the toolkit whenever the host has a nightly backup.
+  if [[ -f ${BACKUP_SCRIPT_PATH} && ! -f ${SCRIPT_DIR}/tau-backup.sh.tmpl ]]; then
+    die "missing ${SCRIPT_DIR}/tau-backup.sh.tmpl — this host has ${BACKUP_SCRIPT_PATH}, which the env rename re-renders; push scripts/setup/tau-backup.sh.tmpl alongside lib.sh and upgrade-host.sh"
+  fi
   ensure_swapfile
   ensure_system_bun_node "${RUN_USER}" "$(command -v bun)"
   # The services this run will restart read <dest>/.env (EnvironmentFile in
-  # both units), and an upgrade rewrites no .env — so if that file never named
-  # a FICUS_SANDBOX_RUNTIME, the flip at step 5 brings both units back DEAD.
-  # Refuse here, while nothing on the box has moved.
+  # both units), and an upgrade renders no .env — so if that file never named
+  # a sandbox runtime (under either env prefix), the flip at step 5 brings
+  # both units back DEAD. Refuse here, while nothing on the box has moved.
   require_env_file_sandbox_runtime "${SRC_DEST}/.env"
 
   # The artifact public key is NOT a secret, but openssl needs it as a file.
-  # 0600 + an EXIT trap so no exit path — including a die deep inside the
-  # verify — leaves it behind.
+  # 0600, and the toolkit EXIT trap (env_prefix_install_traps) removes it, so
+  # no exit path — including a die deep inside the verify — leaves it behind.
   ARTIFACT_PUBKEY_FILE=$(mktemp)
   chmod 600 "${ARTIFACT_PUBKEY_FILE}"
-  trap 'rm -f "${ARTIFACT_PUBKEY_FILE}"' EXIT
   printf '%s' "${FICUS_ARTIFACT_PUBKEY_B64}" | base64 -d >"${ARTIFACT_PUBKEY_FILE}" 2>/dev/null ||
     die "FICUS_ARTIFACT_PUBKEY_B64 is not valid base64"
   [[ -s ${ARTIFACT_PUBKEY_FILE} ]] || die "FICUS_ARTIFACT_PUBKEY_B64 decoded to an empty public key"
@@ -234,7 +309,16 @@ artifact_upgrade() {
   if [[ -d ${SRC_DEST}/.git ]]; then
     log_step 'artifact upgrade 2/5: converting the git checkout to the artifact layout (one-way)'
     artifact_convert_git_checkout "${SRC_DEST}"
-    install_core_units "${SCRIPT_DIR}/systemd"
+    # The units now name <dest>/current, which is the CONVERTED checkout — a
+    # git tree has no artifact.json, so its package.json decides which env
+    # spelling it reads (TAU for a pre-rename checkout). The env rename of
+    # this run then leaves the units out of its backup set; a restore
+    # re-renders them for this layout (N-I3).
+    conv_tree=$(active_release_tree) || die "could not resolve ${SRC_DEST}/current after the conversion"
+    conv_prefix=$(core_release_env_prefix "${conv_tree}") || die "could not tell which env prefix the converted checkout reads"
+    install_core_units "${SCRIPT_DIR}/systemd" "${conv_prefix}"
+    # shellcheck disable=SC2034 # read by lib.sh's migrate_env_prefix_host / env_rename_backup_create
+    ARTIFACT_CONVERTED_THIS_RUN=1
     ensure_tau_api_memory_guardrail
     as_root systemctl daemon-reload
     log_info "units now run from ${SRC_DEST}/current (conversion complete; a manual rollback is: point current at releases/git-<sha> and restart)"
@@ -264,21 +348,38 @@ artifact_upgrade() {
   artifact_stage "${SRC_DEST}" "${tree}" "${sha}" "${digest12}"
   release_dir=$(artifact_release_dir "${SRC_DEST}" "${sha}" "${digest12}")
 
-  log_step "artifact upgrade 4/5: systemd units → ${SRC_DEST}/current"
-  # Idempotent, and the ONLY unit render for a box that was already on the
-  # artifact layout (the conversion branch above did its own, immediately).
-  # This is where a changed template reaches an existing artifact box.
-  # install_rendered --check-placeholders refuses to land a unit with an
-  # unsubstituted marker; artifact_activate daemon-reloads before it restarts,
-  # so a changed unit and the flip take effect together.
-  install_core_units "${SCRIPT_DIR}/systemd"
-  ensure_tau_api_memory_guardrail
+  # The direction of the env rename comes from the release being activated
+  # (N-C2), never from a literal. A release that predates the rename cannot
+  # read a renamed host's settings: refuse now, while the only thing that
+  # moved is the staged release (and a conversion, which is harmless).
+  target_prefix=$(core_release_env_prefix "${release_dir}") || die "could not tell which env prefix ${release_dir} reads"
+  if [[ ${target_prefix} == TAU && $(host_env_prefix "${SRC_DEST}/.env") == FICUS ]]; then
+    die "target Core predates the Ficus rename but this host's settings are FICUS_*; re-run with --restore-env-backup <set> (see $(env_rename_backup_root)) or choose a Ficus release"
+  fi
 
-  log_step 'artifact upgrade 5/5: migrate → flip → restart (auto-rollback on a failed health check)'
+  log_step "artifact upgrade 4/5: env settings and systemd units are prepared right before the flip"
+  # Both happen inside artifact_activate's pre-flip hook
+  # (migrate_env_prefix_host_for): AFTER the candidate's migration succeeded
+  # and IMMEDIATELY before `current` moves, so the old core runs against
+  # renamed files for no longer than that one step. The hook renders the
+  # units in the spelling the target reads — the ONLY unit render for a box
+  # that was already on the artifact layout, i.e. where a changed template
+  # reaches it — and artifact_activate daemon-reloads before it restarts, so
+  # a changed unit and the flip take effect together.
+
+  log_step 'artifact upgrade 5/5: migrate → rename env → flip → restart (auto-rollback on a failed health check)'
   # No `||` and no `if`: a failed activation must abort this script through
   # set -e. artifact_activate emits FICUS_RELEASE_ROLLED_BACK itself — it is the
-  # only code that knows whether the flip survived.
+  # only code that knows whether the flip survived. Its rollback hook puts the
+  # env backup set back before the rollback restart; the EXIT trap does the
+  # same for any other failure after the rename.
+  # shellcheck disable=SC2034 # read by lib.sh's artifact_activate
+  ARTIFACT_PREFLIP_HOOK=migrate_env_prefix_host_for
+  # shellcheck disable=SC2034 # read by lib.sh's artifact_activate
+  ARTIFACT_ROLLBACK_HOOK=env_prefix_restore_pending
   artifact_activate "${SRC_DEST}" "${release_dir}" "${CORE_PORT}"
+  # The renamed files are what the serving release reads now.
+  env_prefix_commit
   artifact_retention "${SRC_DEST}"
 
   log_info "activated release ${sha:0:12}-${digest12} (was ${before})"
@@ -316,15 +417,27 @@ id -u "${RUN_USER}" >/dev/null 2>&1 || die "core.run_user '${RUN_USER}' does not
 ensure_swapfile
 ensure_system_bun_node "${RUN_USER}" "$(command -v bun)"
 # Same reasoning as artifact mode's preflight: phase 4 restarts tau-api and
-# tau-worker against <dest>/.env, which this script never rewrites. An .env
-# with no (or a retired) FICUS_SANDBOX_RUNTIME means both units come back dead
-# AFTER the checkout has already moved — so check before phase 1.
+# tau-worker against <dest>/.env, which this script never renders. An .env
+# with no (or a retired) sandbox runtime under either env prefix means both
+# units come back dead AFTER the checkout has already moved — so check before
+# phase 1.
 require_env_file_sandbox_runtime "${SRC_DEST}/.env"
+if [[ -f ${BACKUP_SCRIPT_PATH} && ! -f ${SCRIPT_DIR}/tau-backup.sh.tmpl ]]; then
+  die "missing ${SCRIPT_DIR}/tau-backup.sh.tmpl — this host has ${BACKUP_SCRIPT_PATH}, which the env rename re-renders; push scripts/setup/tau-backup.sh.tmpl alongside lib.sh and upgrade-host.sh"
+fi
 
 BEFORE_SHA=$(git -C "${SRC_DEST}" rev-parse HEAD)
 
 log_step "phase 1/4: source → ${SRC_REF}"
 git_source_sync
+
+# The env prefix the new checkout reads (its package.json name, N-C2). A
+# checkout that predates the Ficus rename cannot read a renamed host's
+# settings: refuse before building or migrating anything.
+GIT_TARGET_PREFIX=$(core_release_env_prefix "${SRC_DEST}") || die "could not tell which env prefix ${SRC_DEST} reads"
+if [[ ${GIT_TARGET_PREFIX} == TAU && $(host_env_prefix "${SRC_DEST}/.env") == FICUS ]]; then
+  die "target Core predates the Ficus rename but this host's settings are FICUS_*; re-run with --restore-env-backup <set> (see $(env_rename_backup_root)) or choose a Ficus release"
+fi
 
 log_step "phase 2/4: dependencies + build (core + cli${CORE_SERVE_WEB:+ + web}) — ~1-2 min, silent while it builds"
 build_app "${SRC_DEST}" "${CORE_SERVE_WEB}"
@@ -337,8 +450,16 @@ if [[ ${FICUS_API_MEMORY_GUARDRAIL_CHANGED} -eq 1 ]]; then
   as_root systemctl daemon-reload
 fi
 
+# The env rename, immediately before the restart: the new checkout's
+# migrations above already read the old names through its in-process bridge,
+# so renaming as late as possible only shrinks the window. Git mode has no
+# auto-rollback: a failed restart restores the backup set over the new
+# checkout (the EXIT trap), which that release's one-release fallback boots.
+migrate_env_prefix_host "${GIT_TARGET_PREFIX}" "${SRC_DEST}"
+
 log_step "phase 4/4: restart tau-api + tau-worker"
 restart_core_services "${CORE_PORT}"
+env_prefix_commit
 
 AFTER_SHA=$(git -C "${SRC_DEST}" rev-parse HEAD)
 AFTER_REF=$(git -C "${SRC_DEST}" rev-parse --abbrev-ref HEAD)
