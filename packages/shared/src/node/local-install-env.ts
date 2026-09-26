@@ -20,7 +20,7 @@ import {
   writeSync,
 } from 'fs'
 import { basename, dirname, join } from 'path'
-import { EcosystemEnvRenameError, renameEcosystemEnvKeys } from './ecosystem-env'
+import { renameEcosystemPm2Names } from './ecosystem-env'
 import { ENV_PREFIX, EnvPrefixConflictError, LEGACY_ENV_PREFIX, renameEnvPrefix, type EnvPrefix } from '../legacy-env'
 
 /** The files of a local install that carry env names: the dotenv file and the pm2 ecosystem. */
@@ -77,12 +77,16 @@ export function checkoutPackageName(root: string): string | null {
   }
 }
 
-function renameFile(name: string, path: string, text: string): string {
+function renameFile(name: string, path: string, text: string, warn?: (line: string) => void): string {
+  if (name !== '.env') {
+    const { content, warnings } = renameEcosystemPm2Names(text)
+    for (const line of warnings) warn?.(line)
+    return content
+  }
   try {
-    return name === '.env' ? renameEnvPrefix(text, LEGACY_ENV_PREFIX, ENV_PREFIX).content : renameEcosystemEnvKeys(text)
+    return renameEnvPrefix(text, LEGACY_ENV_PREFIX, ENV_PREFIX).content
   } catch (error) {
     if (error instanceof EnvPrefixConflictError) throw new LocalInstallEnvConflictError(path, error.keys)
-    if (error instanceof EcosystemEnvRenameError) error.message = `${path}: ${error.message}`
     throw error
   }
 }
@@ -91,7 +95,7 @@ function renameFile(name: string, path: string, text: string): string {
  * What migrateLocalInstallEnv would rewrite, computed for every file before anything is written.
  * Pure: reads only. Throws LocalInstallEnvConflictError on a protected conflict (Ruling 24).
  */
-export function planLocalInstallEnvMigration(root: string): LocalInstallEnvChange[] {
+export function planLocalInstallEnvMigration(root: string, warn?: (line: string) => void): LocalInstallEnvChange[] {
   const changes: LocalInstallEnvChange[] = []
   for (const name of LOCAL_INSTALL_ENV_FILES) {
     const link = join(root, name)
@@ -99,7 +103,7 @@ export function planLocalInstallEnvMigration(root: string): LocalInstallEnvChang
     // A symlinked file keeps its link: the target is what gets rewritten.
     const path = realpathSync(link)
     const text = readFileSync(path, 'utf8')
-    const content = renameFile(name, link, text)
+    const content = renameFile(name, link, text, warn)
     if (content !== text) changes.push({ path, content })
   }
   return changes
@@ -156,7 +160,10 @@ function backUp(path: string, stamp: string): string {
 }
 
 /**
- * Hard-rename a local install's `<root>/.env` and `<root>/ecosystem.config.js` from TAU_ to FICUS_.
+ * Hard-rename a local install's `<root>/.env` from TAU_ to FICUS_, and the two generated
+ * `TAU_PM2_*_NAME:` lines of `<root>/ecosystem.config.js` (Ruling 28: every other ecosystem key is
+ * left to the in-process bridge; see renameEcosystemPm2Names). `options.warn` receives one line per
+ * PM2 name key left unrenamed on purpose.
  *
  * Every file's rename is computed before anything is written, so a protected conflict
  * (LocalInstallEnvConflictError, an EnvPrefixConflictError) leaves every file untouched with no
@@ -165,8 +172,12 @@ function backUp(path: string, stamp: string): string {
  * If a replace fails, the files already replaced are restored before the error propagates.
  * Idempotent: with nothing to rename it returns `{ renamed: [], backups: [] }` and writes nothing.
  */
-export async function migrateLocalInstallEnv(root: string, now: Date = new Date()): Promise<LocalInstallEnvMigration> {
-  const changes = planLocalInstallEnvMigration(root)
+export async function migrateLocalInstallEnv(
+  root: string,
+  now: Date = new Date(),
+  options: { warn?: (line: string) => void } = {}
+): Promise<LocalInstallEnvMigration> {
+  const changes = planLocalInstallEnvMigration(root, options.warn)
   const result: LocalInstallEnvMigration = { renamed: [], backups: [] }
   if (changes.length === 0) return result
   const stamp = utcStamp(now)

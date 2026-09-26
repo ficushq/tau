@@ -21,7 +21,7 @@ export {
   migrateLocalInstallEnv,
   planLocalInstallEnvMigration,
   rejectAfterRestoring,
-  renameEcosystemEnvKeys,
+  renameEcosystemPm2Names,
   restoreLocalInstallEnv,
   type LocalInstallEnvMigration,
 } from '@ficus/shared/node'
@@ -50,6 +50,11 @@ function hasLegacyKeys(root: string): boolean {
   }
 }
 
+/** A checkout rename: what moved, and the warnings (also logged) about what deliberately did not. */
+export interface CheckoutEnvMigration extends LocalInstallEnvMigration {
+  warnings: string[]
+}
+
 /**
  * Rename `root`'s install files when its code reads FICUS_, and say what moved. A checkout that
  * predates the rename is left alone silently (its code reads TAU_); one whose package name is
@@ -60,16 +65,21 @@ function hasLegacyKeys(root: string): boolean {
 export async function migrateCheckoutEnv(
   root: string,
   options: { log?: (line: string) => void; now?: Date } = {}
-): Promise<LocalInstallEnvMigration> {
+): Promise<CheckoutEnvMigration> {
+  const warnings: string[] = []
+  const warn = (line: string) => {
+    warnings.push(line)
+    options.log?.(`warning: ${line}`)
+  }
   if (!checkoutReadsFicusEnv(root)) {
     if (checkoutEnvPrefix(root) !== LEGACY_ENV_PREFIX && hasLegacyKeys(root)) {
-      options.log?.(
-        `warning: TAU_ settings in ${root} were not renamed to FICUS_: its package.json ${describeCheckoutPackage(root)}, not "ficus"`
+      warn(
+        `TAU_ settings in ${root} were not renamed to FICUS_: its package.json ${describeCheckoutPackage(root)}, not "ficus"`
       )
     }
-    return { renamed: [], backups: [] }
+    return { renamed: [], backups: [], warnings }
   }
-  const result = await migrateLocalInstallEnv(root, options.now)
+  const result = await migrateLocalInstallEnv(root, options.now, { warn })
   if (result.renamed.length > 0) {
     const files = result.renamed.map((path) => basename(path)).join(' and ')
     // Backups sit next to the real files: relative to the real root (macOS /var is /private/var).
@@ -79,7 +89,7 @@ export async function migrateCheckoutEnv(
       `Renamed TAU_ settings to FICUS_ in ${files} (backup${result.backups.length > 1 ? 's' : ''}: ${backups})`
     )
   }
-  return result
+  return { ...result, warnings }
 }
 
 /**

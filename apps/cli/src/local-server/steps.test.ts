@@ -422,7 +422,7 @@ describe('the env step', () => {
       }
     })
 
-    it('renames the ecosystem.config.js env keys of an existing pm2 install too', async () => {
+    it('renames the ecosystem.config.js PM2 name keys of an existing pm2 install too', async () => {
       const { root, deps } = ficusFixture()
       try {
         writeFileSync(join(root, '.env'), legacy)
@@ -434,7 +434,12 @@ describe('the env step', () => {
         await stepOf(opts({ root }), deps).run()
         const ecosystem = readFileSync(join(root, 'ecosystem.config.js'), 'utf8')
         expect(ecosystem).toContain(`FICUS_PM2_API_NAME: '${instanceNames('tau').api}',`)
-        expect(ecosystem).not.toMatch(/\bTAU_/)
+        // Ruling 28: only the generated PM2 name lines move; the bridge reads the other keys.
+        expect(ecosystem).toBe(
+          oldEcosystem
+            .replace('TAU_PM2_API_NAME', 'FICUS_PM2_API_NAME')
+            .replace('TAU_PM2_WORKER_NAME', 'FICUS_PM2_WORKER_NAME')
+        )
       } finally {
         rmSync(root, { recursive: true, force: true })
       }

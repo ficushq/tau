@@ -15,17 +15,16 @@ import {
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { EnvPrefixConflictError } from '@ficus/shared/legacy-env'
-import { EcosystemEnvRenameError } from '@ficus/shared/node'
 import {
   checkoutEnvPrefix,
   migrateCheckoutEnv,
   migrateLocalInstallEnv,
   planLocalInstallEnvMigration,
   rejectAfterRestoring,
-  renameEcosystemEnvKeys,
+  renameEcosystemPm2Names,
   restoreLocalInstallEnv,
 } from './env-prefix'
-import { instanceNames } from './instance'
+import { generateEcosystem, instanceNames } from './instance'
 import { defaultRunner } from './runner'
 
 // The default instance's pm2 names ('tau-' + api/worker): phase-5 identity, unchanged by this rename.
@@ -63,7 +62,7 @@ const read = (name: string) => readFileSync(join(root, name))
 const backupsIn = (dir = root) => readdirSync(dir).filter((name) => name.includes('.pre-ficus-'))
 
 describe('migrateLocalInstallEnv', () => {
-  it('renames .env and the ecosystem env keys to FICUS_, keeping every value and byte-identical backups', async () => {
+  it('renames .env and the ecosystem PM2 name keys to FICUS_, keeping every value and byte-identical backups', async () => {
     writeFileSync(join(root, '.env'), ENV)
     writeFileSync(join(root, 'ecosystem.config.js'), ECOSYSTEM)
     chmodSync(join(root, '.env'), 0o600)
@@ -75,11 +74,15 @@ describe('migrateLocalInstallEnv', () => {
     const ecosystem = read('ecosystem.config.js').toString()
     expect(ecosystem).toContain(`        FICUS_PM2_API_NAME: '${API}',\n`)
     expect(ecosystem).toContain(`        FICUS_PM2_WORKER_NAME: '${WORKER}',\n`)
-    expect(ecosystem).toContain("        FICUS_SYSTEM_LOG_PROVIDER: 'pm2',\n")
-    expect(ecosystem).toContain("        // FICUS_SERVE_WEB: '1',\n")
+    // Ruling 28: only the generated PM2 name keys move; the bridge reads the rest.
+    expect(ecosystem).toBe(
+      ECOSYSTEM.replace('TAU_PM2_API_NAME', 'FICUS_PM2_API_NAME').replace(
+        'TAU_PM2_WORKER_NAME',
+        'FICUS_PM2_WORKER_NAME'
+      )
+    )
     // The process names are phase-5 identity: only the keys move.
     expect(ecosystem).toContain(`      name: '${API}',\n`)
-    expect(ecosystem).not.toMatch(/\bTAU_/)
 
     expect(result.renamed).toEqual([join(root, '.env'), join(root, 'ecosystem.config.js')])
     expect(result.backups).toEqual([
@@ -244,109 +247,175 @@ describe('planLocalInstallEnvMigration', () => {
   })
 })
 
-describe('renameEcosystemEnvKeys', () => {
-  /** An ecosystem file with one app per env body. */
-  const apps = (...envs: string[][]) =>
+// Controller Ruling 28: only the two generated PM2 name lines are renamed, and only in their
+// generated shape. Every other TAU_ key is left to the in-process bridge, and no line is ever
+// added, dropped or merged, so the file is byte-identical apart from those lines.
+describe('renameEcosystemPm2Names', () => {
+  /** The reviewer's probe wrapper: one app whose env body is `body`. */
+  const wrap = (body: string, crlf = false) => {
+    const text = `const KEY = 'from-var'\nmodule.exports = {\n  apps: [\n    {\n      name: '${API}',\n      env: {\n${body}\n      },\n    },\n  ],\n}\n`
+    return crlf ? text.replaceAll('\n', '\r\n') : text
+  }
+  let probe = 0
+  /** Load an ecosystem file the way pm2 does (node `require`) and return its env blocks as JSON. */
+  const load = (text: string): string => {
+    const file = join(root, `ecosystem-probe-${probe++}.js`)
+    writeFileSync(file, text)
+    const script = `const m = require(${JSON.stringify(file)}); process.stdout.write(JSON.stringify(m.apps.map((a) => [a.env, a.env_production])))`
+    const result = Bun.spawnSync([Bun.which('node') ?? process.execPath, '-e', script])
+    return result.exitCode === 0 ? result.stdout.toString() : `LOAD-ERROR ${result.stderr.toString()}`
+  }
+  const envOf = (text: string) => (JSON.parse(load(text)) as [Record<string, unknown>][])[0][0]
+
+  it('renames a generated PM2 name line, keeping its value and the rest of the file byte for byte', () => {
+    const before = wrap(`        TAU_PM2_API_NAME: '${API}',\n        TAU_SYSTEM_LOG_PROVIDER: 'pm2',`)
+    const { content, warnings } = renameEcosystemPm2Names(before)
+    expect(content).toBe(before.replace('TAU_PM2_API_NAME', 'FICUS_PM2_API_NAME'))
+    expect(warnings).toEqual([])
+    expect(envOf(content)).toEqual({ FICUS_PM2_API_NAME: API, TAU_SYSTEM_LOG_PROVIDER: 'pm2' })
+  })
+
+  it('leaves every other TAU_ key alone, commented, quoted or not', () => {
+    const before = wrap(
+      [
+        "        TAU_SYSTEM_LOG_PROVIDER: 'pm2',",
+        "        // TAU_SERVE_WEB: '1',",
+        "        'TAU_QUOTED': 'x',",
+        "        TAU_ENCRYPTION_KEY: 'aaa',",
+        "        FICUS_ENCRYPTION_KEY: 'bbb',",
+      ].join('\n')
+    )
+    expect(renameEcosystemPm2Names(before)).toEqual({ content: before, warnings: [] })
+  })
+
+  it('keeps CRLF line endings on a renamed line', () => {
+    const before = wrap(`        TAU_PM2_WORKER_NAME: '${WORKER}',`, true)
+    expect(renameEcosystemPm2Names(before).content).toBe(before.replace('TAU_PM2_WORKER_NAME', 'FICUS_PM2_WORKER_NAME'))
+  })
+
+  it('does nothing, silently, when the FICUS_ twin already names the same process', () => {
+    const before = wrap(`        TAU_PM2_API_NAME: '${API}',\n        FICUS_PM2_API_NAME: "${API}",`)
+    expect(renameEcosystemPm2Names(before)).toEqual({ content: before, warnings: [] })
+  })
+
+  const notRenamed = (key: string) =>
+    `${key} in ecosystem.config.js was not renamed to ${key.replace('TAU_', 'FICUS_')}: it is not a single \`${key}: '<name>',\` line; rename it by hand`
+  const twinDiffers = (key: string) =>
+    `${key} and ${key.replace('TAU_', 'FICUS_')} in ecosystem.config.js name different processes (or ${key.replace('TAU_', 'FICUS_')} is not a plain \`${key.replace('TAU_', 'FICUS_')}: '<name>',\` line); both were left as they are — remove the wrong one`
+
+  // Each leaves the file byte-identical, says which key it left, and the file still loads.
+  const unrenamed: [string, string, string][] = [
     [
-      'module.exports = {',
-      '  apps: [',
-      ...envs.flatMap((env, index) => [
-        '    {',
-        `      name: '${index === 0 ? API : WORKER}',`,
-        '      env: {',
-        ...env.map((line) => `        ${line}`),
-        '      },',
-        '    },',
-      ]),
-      '  ],',
-      '}',
-      '',
-    ].join('\n')
+      'a value on the next line (what Prettier writes for a long one)',
+      `        TAU_PM2_API_NAME:\n          '${API}',`,
+      notRenamed('TAU_PM2_API_NAME'),
+    ],
+    ['a continued value', "        TAU_PM2_API_NAME: 'tau'\n          + '-api',", notRenamed('TAU_PM2_API_NAME')],
+    ['a second key on the same line', "        TAU_PM2_API_NAME: 'a', OTHER: 1,", notRenamed('TAU_PM2_API_NAME')],
+    ['no trailing comma', "        OTHER: 1,\n        TAU_PM2_API_NAME: 'a'", notRenamed('TAU_PM2_API_NAME')],
+    ['an expression value', '        TAU_PM2_API_NAME: KEY,', notRenamed('TAU_PM2_API_NAME')],
+    ['a template literal', '        TAU_PM2_API_NAME: `a`,', notRenamed('TAU_PM2_API_NAME')],
+    ['an escaped quote', "        TAU_PM2_API_NAME: 'it\\'s',", notRenamed('TAU_PM2_API_NAME')],
+    ['the key twice', "        TAU_PM2_API_NAME: 'a',\n        TAU_PM2_API_NAME: 'b',", notRenamed('TAU_PM2_API_NAME')],
+    [
+      'a twin naming another process',
+      "        TAU_PM2_WORKER_NAME: 'a',\n        FICUS_PM2_WORKER_NAME: 'b',",
+      twinDiffers('TAU_PM2_WORKER_NAME'),
+    ],
+    [
+      'a one-side-quoted twin',
+      "        TAU_PM2_API_NAME: 'KEY',\n        FICUS_PM2_API_NAME: KEY,",
+      twinDiffers('TAU_PM2_API_NAME'),
+    ],
+  ]
+  for (const [label, body, warning] of unrenamed) {
+    it(`leaves ${label} alone, with a warning naming the key`, () => {
+      const before = wrap(body)
+      const { content, warnings } = renameEcosystemPm2Names(before)
+      expect(content).toBe(before)
+      expect(warnings).toEqual([warning])
+      expect(warnings.join('\n')).not.toContain("'a'")
+      expect(load(content)).not.toStartWith('LOAD-ERROR')
+    })
+  }
 
-  it('renames TAU_ object keys (commented or quoted) and leaves values and other text alone', () => {
-    const before = apps([
-      `TAU_PM2_API_NAME: '${API}',`,
-      "// TAU_SERVE_WEB: '1',",
-      "'TAU_QUOTED': 'x',",
-      "script: 'TAU_NOT_A_KEY',",
-    ])
-    expect(renameEcosystemEnvKeys(before)).toBe(
-      apps([
-        `FICUS_PM2_API_NAME: '${API}',`,
-        "// FICUS_SERVE_WEB: '1',",
-        "'FICUS_QUOTED': 'x',",
-        "script: 'TAU_NOT_A_KEY',",
-      ])
-    )
+  it('never warns about a commented-out PM2 name line', () => {
+    const before = wrap(`        // TAU_PM2_API_NAME: '${API}',`)
+    expect(renameEcosystemPm2Names(before)).toEqual({ content: before, warnings: [] })
   })
 
-  it('collapses a TAU_ key whose FICUS_ twin in the same object holds the identical value', () => {
-    expect(renameEcosystemEnvKeys(apps(["TAU_PASSWORD: 'same',", 'FICUS_PASSWORD: "same",']))).toBe(
-      apps(['FICUS_PASSWORD: "same",'])
-    )
-  })
+  // The reviewer's probes (t10-review-r1/adv.ts) against the parser this replaces: none names a
+  // PM2 key, so each must come back byte-identical, the encryption-key cases included.
+  const probes: [string, string][] = [
+    ['protected differ', `        TAU_ENCRYPTION_KEY: 'aaa',\n        FICUS_ENCRYPTION_KEY: 'bbb',`],
+    ['protected same, quote styles', `        TAU_ENCRYPTION_KEY: 'aaa',\n        FICUS_ENCRYPTION_KEY: "aaa", // c`],
+    ['unprotected differ', `        TAU_X: 'a',\n        FICUS_X: 'b',`],
+    ['commented TAU beside live FICUS', `        // TAU_ENCRYPTION_KEY: 'aaa',\n        FICUS_ENCRYPTION_KEY: 'bbb',`],
+    ['live TAU beside commented FICUS', `        TAU_ENCRYPTION_KEY: 'aaa',\n        // FICUS_ENCRYPTION_KEY: 'bbb',`],
+    ['literal vs identifier', `        TAU_ENCRYPTION_KEY: 'KEY',\n        FICUS_ENCRYPTION_KEY: KEY,`],
+    [
+      'encryption key continuation on the FICUS twin',
+      `        TAU_ENCRYPTION_KEY: 'k1',\n        FICUS_ENCRYPTION_KEY: 'k1'\n          + 'k2',`,
+    ],
+    [
+      'encryption key continuation on TAU',
+      `        FICUS_ENCRYPTION_KEY: 'k1',\n        TAU_ENCRYPTION_KEY: 'k1'\n          + 'k2',`,
+    ],
+    [
+      'value on the next line, protected',
+      `        TAU_ENCRYPTION_KEY:\n          'aaaa',\n        FICUS_ENCRYPTION_KEY:\n          'bbbb',`,
+    ],
+    ['value on the next line, unprotected', `        TAU_X:\n          'aaaa',\n        FICUS_X: 'bbbb',`],
+    ['ternary continuation', `        FICUS_X: 'b',\n        TAU_X: process.env.A\n          ? 'x'\n          : 'y',`],
+    ['template twin', "        TAU_ENCRYPTION_KEY: `k`,\n        FICUS_ENCRYPTION_KEY: 'k',"],
+    ['template with ${}', '        TAU_URL: `${process.env.HOME}/x // not a comment`,\n        OTHER: 1,'],
+    ['multi-line template holding a key', "        NOTE: `\nTAU_ENCRYPTION_KEY: 'x'\n`,\n        TAU_Y: 1,"],
+    ['escaped quotes', `        TAU_ENCRYPTION_KEY: 'it\\'s',\n        FICUS_ENCRYPTION_KEY: "it's",`],
+    ['// in a string', `        TAU_URL: 'http://x/y', // real comment\n        FICUS_URL: "http://x/y",`],
+    ['two keys on one line', `        TAU_ENCRYPTION_KEY: 'a', FICUS_ENCRYPTION_KEY: 'b',`],
+    ['empty FICUS twin', `        TAU_ENCRYPTION_KEY: 'real',\n        FICUS_ENCRYPTION_KEY: '',`],
+    ['regex with a quote', `        TAU_X: 'a'.replace(/'/g, ''),`],
+    [
+      'nested twin',
+      `        FICUS_ENCRYPTION_KEY: 'a',\n        inner: {\n          TAU_ENCRYPTION_KEY: 'b',\n        },`,
+    ],
+    ['block comment holding a key', `        /*\n        TAU_X: 'a',\n        */\n        TAU_Y: 1,`],
+  ]
+  for (const [label, body] of probes) {
+    it(`leaves probe "${label}" byte-identical and loadable`, () => {
+      const before = wrap(body)
+      expect(renameEcosystemPm2Names(before)).toEqual({ content: before, warnings: [] })
+      expect(load(before)).not.toStartWith('LOAD-ERROR')
+    })
+  }
 
-  it('keeps FICUS_ for a differing unprotected duplicate: it is what the process reads', () => {
-    expect(renameEcosystemEnvKeys(apps(["TAU_PM2_API_NAME: 'old',", "FICUS_PM2_API_NAME: 'new',"]))).toBe(
-      apps(["FICUS_PM2_API_NAME: 'new',"])
-    )
-  })
-
-  it('refuses a differing protected duplicate, naming the key and neither value', () => {
-    const run = () =>
-      renameEcosystemEnvKeys(apps(["TAU_ENCRYPTION_KEY: 'old-key-value',", "FICUS_ENCRYPTION_KEY: 'new-key-value',"]))
-    expect(run).toThrow(EnvPrefixConflictError)
-    try {
-      run()
-    } catch (error) {
-      expect((error as EnvPrefixConflictError).keys).toEqual(['TAU_ENCRYPTION_KEY'])
-      expect((error as Error).message).not.toContain('key-value')
+  it('turns a file generated from the pre-rename example into the new generator output for the PM2 names', () => {
+    const names = instanceNames('smoke')
+    const example = readFileSync(join(__dirname, '../../../../ecosystem.config.example.js'), 'utf8')
+    const generated = generateEcosystem(example, names)
+    // The pre-rename example spelled every key TAU_; so did the file generated from it.
+    const legacy = generated.replace(/\bFICUS_/g, 'TAU_')
+    const { content, warnings } = renameEcosystemPm2Names(legacy)
+    expect(warnings).toEqual([])
+    const [renamedLines, legacyLines, newLines] = [content, legacy, generated].map((text) => text.split('\n'))
+    expect(renamedLines).toHaveLength(legacyLines.length)
+    for (const [index, line] of renamedLines.entries()) {
+      expect(line).toBe(/FICUS_PM2_(API|WORKER)_NAME/.test(newLines[index]) ? newLines[index] : legacyLines[index])
     }
-  })
-
-  it('scopes duplicates to one object: a FICUS_ key in another app does not shadow it', () => {
-    expect(renameEcosystemEnvKeys(apps(["TAU_PASSWORD: 'a',"], ["FICUS_PASSWORD: 'b',"]))).toBe(
-      apps(["FICUS_PASSWORD: 'a',"], ["FICUS_PASSWORD: 'b',"])
-    )
-  })
-
-  it('never adds a commented-out key that already exists as FICUS_', () => {
-    expect(renameEcosystemEnvKeys(apps(["// TAU_SERVE_WEB: '1',", "FICUS_SERVE_WEB: '1',"]))).toBe(
-      apps(["// TAU_SERVE_WEB: '1',", "FICUS_SERVE_WEB: '1',"])
-    )
-  })
-
-  it('leaves a one-line object and text inside strings or comments alone', () => {
-    const text = [
-      'module.exports = {',
-      "  apps: [{ name: 'x', env: { TAU_ONE_LINE: 1 } }],",
-      '  note: `',
-      '  TAU_IN_TEMPLATE: 1,',
-      '  `,',
-      '  /*',
-      '  TAU_IN_BLOCK: 1,',
-      '  */',
-      '}',
-    ].join('\n')
-    expect(renameEcosystemEnvKeys(text)).toBe(text)
-  })
-
-  it('refuses a file it cannot follow, and a multi-line duplicate it cannot drop line by line', () => {
-    expect(() => renameEcosystemEnvKeys("module.exports = {\n  TAU_X: 'a',\n")).toThrow(EcosystemEnvRenameError)
-    expect(() => renameEcosystemEnvKeys("module.exports = {\n  TAU_X: 'it's',\n}\n")).toThrow(EcosystemEnvRenameError)
-    expect(() => renameEcosystemEnvKeys(apps(['TAU_LIST: [', "  'a',", '],', "FICUS_LIST: ['b'],"]))).toThrow(
-      'TAU_LIST spans several lines next to FICUS_LIST; rename its TAU_ keys to FICUS_ by hand, then re-run'
-    )
+    expect(content).toContain(`FICUS_PM2_API_NAME: '${names.api}',`)
+    expect(content).toContain(`FICUS_PM2_WORKER_NAME: '${names.worker}',`)
+    expect(load(content)).not.toStartWith('LOAD-ERROR')
   })
 })
 
-describe('migrateLocalInstallEnv on ecosystem.config.js duplicates', () => {
-  it('refuses a protected conflict before any backup or write, naming the file and key only', async () => {
+describe('migrateLocalInstallEnv and ecosystem.config.js', () => {
+  it('never touches an ecosystem encryption key, even beside a differing FICUS_ twin', async () => {
     const ecosystem = [
       'module.exports = {',
       '  apps: [{',
       `    name: '${API}',`,
       '    env: {',
+      `      TAU_PM2_API_NAME: '${API}',`,
       "      TAU_ENCRYPTION_KEY: 'old-key-value',",
       "      FICUS_ENCRYPTION_KEY: 'new-key-value',",
       '    },',
@@ -356,26 +425,20 @@ describe('migrateLocalInstallEnv on ecosystem.config.js duplicates', () => {
     ].join('\n')
     writeFileSync(join(root, '.env'), ENV)
     writeFileSync(join(root, 'ecosystem.config.js'), ecosystem)
-
-    const error = (await migrateLocalInstallEnv(root, NOW).catch((e: unknown) => e)) as EnvPrefixConflictError
-    expect(error).toBeInstanceOf(EnvPrefixConflictError)
-    expect(error.keys).toEqual(['TAU_ENCRYPTION_KEY'])
-    expect(error.message).toContain(join(root, 'ecosystem.config.js'))
-    expect(error.message).toContain('remove the wrong value, then re-run')
-    expect(error.message).not.toContain('key-value')
-    // Nothing moved, .env included: every file is planned before any is written.
-    expect(read('.env').equals(Buffer.from(ENV))).toBe(true)
-    expect(read('ecosystem.config.js').equals(Buffer.from(ecosystem))).toBe(true)
-    expect(backupsIn()).toEqual([])
+    const warnings: string[] = []
+    await migrateLocalInstallEnv(root, NOW, { warn: (line) => warnings.push(line) })
+    expect(read('ecosystem.config.js').toString()).toBe(ecosystem.replace('TAU_PM2_API_NAME', 'FICUS_PM2_API_NAME'))
+    expect(warnings).toEqual([])
   })
 
-  it('refuses an ecosystem file it cannot follow, naming it, with nothing written', async () => {
-    writeFileSync(join(root, '.env'), ENV)
-    writeFileSync(join(root, 'ecosystem.config.js'), "module.exports = {\n  TAU_X: 'a',\n")
-    await expect(migrateLocalInstallEnv(root, NOW)).rejects.toThrow(
-      `${join(root, 'ecosystem.config.js')}: its quotes, comments or brackets do not balance`
-    )
-    expect(read('.env').toString()).toBe(ENV)
+  it('passes a PM2 name warning on, and takes no ecosystem backup when nothing there changes', async () => {
+    writeFileSync(join(root, 'ecosystem.config.js'), `module.exports = {\n  TAU_PM2_API_NAME:\n    '${API}',\n}\n`)
+    const warnings: string[] = []
+    expect(await migrateLocalInstallEnv(root, NOW, { warn: (line) => warnings.push(line) })).toEqual({
+      renamed: [],
+      backups: [],
+    })
+    expect(warnings).toEqual([expect.stringContaining('TAU_PM2_API_NAME in ecosystem.config.js was not renamed')])
     expect(backupsIn()).toEqual([])
   })
 })
@@ -413,7 +476,11 @@ describe('checkoutEnvPrefix / migrateCheckoutEnv', () => {
   it('leaves a checkout that predates the rename alone: its code reads TAU_', async () => {
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'tau' }))
     writeFileSync(join(root, '.env'), ENV)
-    expect(await migrateCheckoutEnv(root, { log: () => {}, now: NOW })).toEqual({ renamed: [], backups: [] })
+    expect(await migrateCheckoutEnv(root, { log: () => {}, now: NOW })).toEqual({
+      renamed: [],
+      backups: [],
+      warnings: [],
+    })
     expect(read('.env').toString()).toBe(ENV)
   })
 
@@ -432,6 +499,9 @@ describe('checkoutEnvPrefix / migrateCheckoutEnv', () => {
     expect(await migrateCheckoutEnv(root, { log: (line) => logs.push(line), now: NOW })).toEqual({
       renamed: [],
       backups: [],
+      warnings: [
+        `TAU_ settings in ${root} were not renamed to FICUS_: its package.json could not be read, not "ficus"`,
+      ],
     })
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fork' }))
     await migrateCheckoutEnv(root, { log: (line) => logs.push(line), now: NOW })

@@ -11,6 +11,7 @@ import {
   type LocalInstallEnvMigration,
 } from '@ficus/shared/node'
 import { InboxMessage } from '../../entities/InboxMessage'
+import { createLogger } from '../../lib/infra/logger'
 import { requireSandboxRuntime } from '../sandbox/runtime'
 import { CommandRunner, isKilledByOwnRestart } from './command-runner'
 import {
@@ -25,6 +26,8 @@ import type { DeploymentFlavor, ProcessSupervisor } from './deployment-flavor'
 import { acquireUpdateRunLock, type UpdateRunLock } from './run-lock'
 import { DEFAULT_LOCAL_AUTO_UPDATE_SETTINGS, MANUAL_UPDATE_TARGETS } from './types'
 import type { LocalAutoUpdateSettings, LocalUpdateRun, UpdateTask } from './types'
+
+const log = createLogger('local-updater')
 
 export class UpdateLockedError extends Error {
   constructor() {
@@ -128,7 +131,9 @@ export const defaultLocalInstallEnv: LocalInstallEnvOps = {
   // Fail closed: only a checkout whose package.json is named `ficus` reads FICUS_. One that
   // predates the rename (`tau`), or whose name cannot be read, is left as it is.
   migrate: async (root) =>
-    checkoutEnvPrefix(root) === ENV_PREFIX ? migrateLocalInstallEnv(root) : { renamed: [], backups: [] },
+    checkoutEnvPrefix(root) === ENV_PREFIX
+      ? migrateLocalInstallEnv(root, new Date(), { warn: (line) => log.warn(line) })
+      : { renamed: [], backups: [] },
   restore: (backups) => restoreLocalInstallEnv(backups),
 }
 
