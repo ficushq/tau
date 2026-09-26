@@ -965,7 +965,7 @@ remove_box() {
 # Never fatal: this is housekeeping in front of a removal, and a failure to
 # prune must not block the removal itself.
 prune_box_archives() {
-  local keep_days="${FICUS_ARCHIVE_RETENTION_DAYS:-14}"
+  local keep_days="${FICUS_ARCHIVE_RETENTION_DAYS:-${TAU_ARCHIVE_RETENTION_DAYS:-14}}"
   [ -d "${FICUS_ARCHIVE_DIR}" ] || return 0
 
   # Supersede: keep only the newest tarball per box.

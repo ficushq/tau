@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${FICUS_INSTALL_REPO:-ficushq/tau}"
-INSTALL_DIR="${FICUS_INSTALL_DIR:-$HOME/.tau/bin}"
-SHARE_DIR="${FICUS_SHARE_DIR:-$HOME/.tau/share}"
+REPO="${FICUS_INSTALL_REPO:-${TAU_INSTALL_REPO:-ficushq/tau}}"
+INSTALL_DIR="${FICUS_INSTALL_DIR:-${TAU_INSTALL_DIR:-$HOME/.tau/bin}}"
+SHARE_DIR="${FICUS_SHARE_DIR:-${TAU_SHARE_DIR:-$HOME/.tau/share}}"
 BIN_NAME="tau"
 API_URL="${GITHUB_API_URL:-https://api.github.com}"
-DOWNLOAD_BASE_URL="${FICUS_DOWNLOAD_BASE_URL:-https://ficus.sh/cli}"
+DOWNLOAD_BASE_URL="${FICUS_DOWNLOAD_BASE_URL:-${TAU_DOWNLOAD_BASE_URL:-https://ficus.sh/cli}}"
 
 if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ]; then
   ESC=$(printf '\033')
@@ -238,7 +238,7 @@ if [ -d "$SHARE_DIR/skills" ]; then
 fi
 
 configure_auth() {
-  AUTH_MODE="${FICUS_INSTALL_AUTH:-prompt}"
+  AUTH_MODE="${FICUS_INSTALL_AUTH:-${TAU_INSTALL_AUTH:-prompt}}"
   if [ "$AUTH_MODE" = "0" ] || [ "$AUTH_MODE" = "false" ]; then
     warn "Skipping Tau auth setup because FICUS_INSTALL_AUTH=$AUTH_MODE."
     return 0
@@ -261,7 +261,7 @@ configure_auth() {
     esac
   fi
 
-  LABEL="${FICUS_AUTH_LABEL:-}"
+  LABEL="${FICUS_AUTH_LABEL:-${TAU_AUTH_LABEL:-}}"
   if [ -z "$LABEL" ]; then
     if ! is_interactive; then
       err "FICUS_AUTH_LABEL is required when FICUS_INSTALL_AUTH=1 in non-interactive mode"
@@ -271,7 +271,7 @@ configure_auth() {
     [ -n "$LABEL" ] || LABEL="default"
   fi
 
-  API_URL_VALUE="${FICUS_API_URL:-}"
+  API_URL_VALUE="${FICUS_API_URL:-${TAU_API_URL:-}}"
   if [ -z "$API_URL_VALUE" ]; then
     if ! is_interactive; then
       err "FICUS_API_URL is required when FICUS_INSTALL_AUTH=1 in non-interactive mode"
@@ -282,7 +282,7 @@ configure_auth() {
     done
   fi
 
-  PASSWORD_VALUE="${FICUS_PASSWORD:-}"
+  PASSWORD_VALUE="${FICUS_PASSWORD:-${TAU_PASSWORD:-}}"
   if [ -z "$PASSWORD_VALUE" ]; then
     if ! is_interactive; then
       err "FICUS_PASSWORD is required when FICUS_INSTALL_AUTH=1 in non-interactive mode"
@@ -296,8 +296,10 @@ configure_auth() {
   step "Saving backend '$LABEL'..."
   FICUS_PASSWORD="$PASSWORD_VALUE" "$INSTALL_DIR/$BIN_NAME" auth login "$LABEL" --api-url "$API_URL_VALUE"
 
-  if [ "${FICUS_INSTALL_VERIFY:-1}" = "0" ] || [ "${FICUS_INSTALL_VERIFY:-1}" = "false" ]; then
-    warn "Skipping auth verification because FICUS_INSTALL_VERIFY=${FICUS_INSTALL_VERIFY:-1}."
+  # One release (Ficus rename): the older `tau install` still passes the TAU_ names.
+  INSTALL_VERIFY="${FICUS_INSTALL_VERIFY:-${TAU_INSTALL_VERIFY:-1}}"
+  if [ "$INSTALL_VERIFY" = "0" ] || [ "$INSTALL_VERIFY" = "false" ]; then
+    warn "Skipping auth verification because FICUS_INSTALL_VERIFY=$INSTALL_VERIFY."
     return 0
   fi
 

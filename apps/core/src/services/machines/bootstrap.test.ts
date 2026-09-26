@@ -1148,10 +1148,13 @@ describe('browser tools Phase 2 — machine plumbing (group membership, socket e
     expect(body.match(/Environment=FICUS_BROWSER_SOCK=\/run\/tau-browser\/sock/g)).toHaveLength(2)
   })
 
-  it('write_browser_memory_dropin (bootstrap.sh) writes BOTH MemoryHigh and FICUS_BROWSER_MEMORY_HIGH_MB from the same computed cap', () => {
+  it('write_browser_memory_dropin (bootstrap.sh) writes MemoryHigh and both *_BROWSER_MEMORY_HIGH_MB spellings from the same computed cap', () => {
     const body = funcBodyIn(bootstrapSh, 'write_browser_memory_dropin')
     expect(body).toMatch(/MemoryHigh=%sM/)
     expect(body).toMatch(/Environment=FICUS_BROWSER_MEMORY_HIGH_MB=%s/)
+    // One release (Ficus rename): a prebaked image's baked tau-browser.js may
+    // still read only the TAU_ name, and this drop-in is rewritten per boot.
+    expect(body).toMatch(/Environment=TAU_BROWSER_MEMORY_HIGH_MB=%s/)
     // Both format placeholders are fed from the same computed mem_high_mb
     // variable (the printf call passes it at least twice).
     const printfCall = body.match(/printf '[^']*'\s*((?:"\$\{mem_high_mb\}"\s*)+)/)

@@ -371,7 +371,15 @@ async function runSmoke(opts: {
 
     const migrate = await opts.run(['bun', join(treeRoot, 'apps/core/dist/migrate.js')], {
       cwd: join(treeRoot, 'apps/core'),
-      env: { DATABASE_URL: undefined, FICUS_MIGRATE_LIVE: undefined, FICUS_ROOT: undefined },
+      // Both spellings (Ficus rename): the in-process bridge would promote an
+      // inherited TAU_ name to FICUS_ and let the migration run.
+      env: {
+        DATABASE_URL: undefined,
+        FICUS_MIGRATE_LIVE: undefined,
+        FICUS_ROOT: undefined,
+        TAU_MIGRATE_LIVE: undefined, // legacy-env
+        TAU_ROOT: undefined, // legacy-env
+      },
     })
     const output = `${migrate.stdout}\n${migrate.stderr}`
     if (migrate.exitCode === 0) {

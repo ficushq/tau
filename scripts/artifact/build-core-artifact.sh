@@ -66,6 +66,11 @@ export DATABASE_URL="${DATABASE_URL:-postgres://build:build@localhost:5432/build
 unset FICUS_TEST_MODE
 unset FICUS_ROOT
 unset FICUS_REPO_ROOT
+# ...and their legacy spellings, for one release (Ficus rename): the in-process
+# bridge would promote an inherited TAU_ name to FICUS_ inside the build.
+unset TAU_TEST_MODE # legacy-env
+unset TAU_ROOT # legacy-env
+unset TAU_REPO_ROOT # legacy-env
 
 # --- prerequisites ---
 if ! COMMIT="$(git rev-parse HEAD 2>/dev/null)"; then

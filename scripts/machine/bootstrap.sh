@@ -398,7 +398,7 @@ write_browser_service() {
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 
-const SOCK = process.env.FICUS_BROWSER_SOCK || '/run/tau-browser/sock'
+const SOCK = process.env.FICUS_BROWSER_SOCK || process.env.TAU_BROWSER_SOCK || '/run/tau-browser/sock'
 // A SIBLING of /opt/tau/browser, not a child — install_browser recursively
 // chown/chmods /opt/tau/browser to root:root + a+rX (every box user must
 // read the browser binaries), which would world-expose token digests if they
@@ -564,7 +564,8 @@ export function createService(deps = {}) {
       return chromium.launch({ headless: true })
     })
   const now = deps.now || Date.now
-  const tokensDir = deps.tokensDir || process.env.FICUS_BROWSER_TOKENS_DIR || DEFAULT_TOKENS_DIR
+  const tokensDir =
+    deps.tokensDir || process.env.FICUS_BROWSER_TOKENS_DIR || process.env.TAU_BROWSER_TOKENS_DIR || DEFAULT_TOKENS_DIR
   // Docker-dev-only escape hatch (R-B17): the docker sandbox's box server runs as
   // a plain OS user (root) whose name never matches BOX_USER_RE, so the prod
   // box_<hex> gate would 401 every in-container browser call. When — and ONLY
@@ -572,8 +573,12 @@ export function createService(deps = {}) {
   // unit does not carry it), also accept a box user equal to it, still
   // constrained by isSafeTokenUser so the token filename can't traverse. With the
   // env unset the auth path is byte-identical to box_<hex>-only.
-  const devAllowUser = deps.devAllowUser || process.env.FICUS_BROWSER_DEV_ALLOW_USER || ''
-  const memoryHighMb = deps.memoryHighMb || Number(process.env.FICUS_BROWSER_MEMORY_HIGH_MB) || DEFAULT_MEMORY_HIGH_MB
+  const devAllowUser =
+    deps.devAllowUser || process.env.FICUS_BROWSER_DEV_ALLOW_USER || process.env.TAU_BROWSER_DEV_ALLOW_USER || ''
+  const memoryHighMb =
+    deps.memoryHighMb ||
+    Number(process.env.FICUS_BROWSER_MEMORY_HIGH_MB || process.env.TAU_BROWSER_MEMORY_HIGH_MB) ||
+    DEFAULT_MEMORY_HIGH_MB
   // The SSRF host guard is injectable so an embedder whose browser has no more
   // network reach than the caller already has can turn it off (the host sandbox
   // runtime runs this engine in-process on the user's own machine, where the
@@ -1175,7 +1180,10 @@ write_browser_memory_dropin() {
   fi
   dropin_dir="${FICUS_BROWSER_UNIT}.d"
   "${SUDO[@]}" mkdir -p "${dropin_dir}"
-  printf '[Service]\nMemoryHigh=%sM\nEnvironment=FICUS_BROWSER_MEMORY_HIGH_MB=%s\n' "${mem_high_mb}" "${mem_high_mb}" \
+  # Both env spellings for one release (Ficus rename): this drop-in is rewritten
+  # per boot, including on a prebaked image whose baked tau-browser.js may
+  # predate the rename and read only the TAU_ name.
+  printf '[Service]\nMemoryHigh=%sM\nEnvironment=FICUS_BROWSER_MEMORY_HIGH_MB=%s\nEnvironment=TAU_BROWSER_MEMORY_HIGH_MB=%s\n' "${mem_high_mb}" "${mem_high_mb}" "${mem_high_mb}" \
     | "${SUDO[@]}" install -m 0644 /dev/stdin "${dropin_dir}/memory.conf"
 }
 

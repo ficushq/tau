@@ -333,11 +333,29 @@ describe('tau-browser service', () => {
   // traversal-shaped dev user is refused; box_<hex> is unaffected either way.
   describe('R-B17 docker-dev auth escape hatch', () => {
     const ENV_KEY = 'FICUS_BROWSER_DEV_ALLOW_USER'
+    // One release (Ficus rename): the service still honours the legacy name.
+    const LEGACY_ENV_KEY = 'TAU_BROWSER_DEV_ALLOW_USER'
     const saved = process.env[ENV_KEY]
+    const savedLegacy = process.env[LEGACY_ENV_KEY]
 
     afterEach(() => {
       if (saved === undefined) delete process.env[ENV_KEY]
       else process.env[ENV_KEY] = saved
+      if (savedLegacy === undefined) delete process.env[LEGACY_ENV_KEY]
+      else process.env[LEGACY_ENV_KEY] = savedLegacy
+    })
+
+    it('still honours the legacy TAU_ name for one release', async () => {
+      writeFileSync(join(tokensDir, 'root.token'), sha256Hex('root-token'))
+      delete process.env[ENV_KEY]
+      process.env[LEGACY_ENV_KEY] = 'root'
+      const service = createService({ ...makeLaunch(), tokensDir })
+      const { status } = await req(service, '/open', {
+        user: 'root',
+        token: 'root-token',
+        body: { runId: 'r1', url: 'http://x' },
+      })
+      expect(status).toBe(200)
     })
 
     it('authenticates a non-box dev user (root) WITH the env set + matching digest', async () => {

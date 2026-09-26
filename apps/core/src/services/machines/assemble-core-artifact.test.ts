@@ -471,9 +471,13 @@ describe('build-core-artifact.sh', () => {
     // localhost, so a build that somehow reaches the DB fails fast instead of
     // hanging on an unroutable host.
     expect(script).toContain('postgres://build:build@localhost:5432/build')
-    expect(script).toContain('unset FICUS_TEST_MODE')
-    expect(script).toContain('unset FICUS_ROOT')
-    expect(script).toContain('unset FICUS_REPO_ROOT')
+    // Both spellings for one release (Ficus rename): the in-process bridge
+    // would promote an inherited TAU_ name to FICUS_ inside the build.
+    for (const prefix of ['FICUS', 'TAU']) {
+      expect(script).toContain(`unset ${prefix}_TEST_MODE`)
+      expect(script).toContain(`unset ${prefix}_ROOT`)
+      expect(script).toContain(`unset ${prefix}_REPO_ROOT`)
+    }
   })
 
   it('installs reproducibly and prebuilds the machine bundles as a subprocess', async () => {
