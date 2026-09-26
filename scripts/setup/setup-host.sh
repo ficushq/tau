@@ -529,10 +529,13 @@ resolve_secrets() {
 #
 # A real run first makes a journaled env rename that an interrupted upgrade
 # left behind match the release that is serving (restore or finish), then
-# installs the traps that restore THIS run's rename (just before phase_env)
-# if the run fails or is signalled. A dry run changes nothing, so neither.
+# installs the traps that settle THIS run's rename (just before phase_env) if
+# the run fails or is signalled — restored while the previous release is
+# active, finished forward once the Ficus one is (Ruling 29). A dry run
+# changes nothing, so neither.
 if [[ ${DRY_RUN} -eq 0 ]]; then
-  # One toolkit run at a time may rename, restore or reconcile this host.
+  # One toolkit run at a time may rename, restore or reconcile this host (the
+  # lock, like those steps, is root-only: Ruling 30).
   env_prefix_lock
   reconcile_rc=0
   env_prefix_reconcile || reconcile_rc=$?
@@ -1449,6 +1452,9 @@ require_ficus_target_release() {
     die "could not tell which env prefix ${ARTIFACT_RELEASE_DIR:-${SRC_DEST}} reads"
   [[ ${p} == FICUS ]] ||
     die "this toolkit installs Ficus releases only; use the toolkit from the release you are installing"
+  # A non-root (sudo) re-run on a host whose settings predate the rename
+  # cannot rename them: refuse before any phase changes the host (Ruling 30).
+  require_env_rename_privilege FICUS
 }
 
 phase_preflight

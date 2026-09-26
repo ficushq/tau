@@ -3307,7 +3307,7 @@ EOF
   # NO artifact inputs at all is plain git mode — which still refuses to run
   # against a dest that is not a checkout.
   uh_rc=0
-  uh_out=$(ENV_RENAME_BACKUP_ROOT="${UH_TMP}/bk" bash "${SCRIPT_DIR}/upgrade-host.sh" --config "${UH_TMP}/tau-setup.yaml" 2>&1) || uh_rc=$?
+  uh_out=$(bash "${SCRIPT_DIR}/upgrade-host.sh" --config "${UH_TMP}/tau-setup.yaml" 2>&1) || uh_rc=$?
   expect_eq 'upgrade-host: no artifact inputs = git mode' "${uh_rc}" '1'
   expect_match 'upgrade-host: git mode still requires a checkout at source.dest' \
     "${uh_out}" 'is not a git checkout — nothing to upgrade'
@@ -5510,6 +5510,11 @@ as_root() {
   "$@"
 }
 epr_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+# The rename machinery is root-only (Ruling 30). Everything it writes here is
+# in the scratch dir, so both passes run it as "root"; the non-root refusals
+# are tested explicitly below with the opposite override.
+EPR_SAVED_IS_ROOT=$(declare -f _epr_is_root)
+_epr_is_root() { return 0; }
 # A core unit file under the scratch unit dir: epr_unit api|worker.
 epr_unit() { printf '%s/tau-%s.service' "${FICUS_SYSTEMD_UNIT_DIR}" "$1"; } # phase5-unit-name
 
@@ -5949,6 +5954,9 @@ expect_match 'require_host_env_prefix: a FICUS .env under a pre-rename active re
   "$( (require_host_env_prefix FICUS "${SRC_DEST}/.env") 2>&1)" 'active release .* reads TAU_\* settings'
 
 # --- M11: one toolkit run at a time (flock on the backup root) --------------
+# A root run locks. The lock itself works for any user on a scratch root, so
+# both passes exercise it with _epr_is_root answering "root" (Ruling 30 makes
+# the lock root-only; the non-root cases follow below).
 if have flock; then
   export ENV_RENAME_BACKUP_ROOT="${EPR}/lock-bk"
   mkdir -p "${ENV_RENAME_BACKUP_ROOT}"
@@ -5956,15 +5964,55 @@ if have flock; then
   ( flock 8; : >"${EPR}/lock-held"; read -r _ <"${EPR}/lock-fifo" ) 8>>"${ENV_RENAME_BACKUP_ROOT}/.lock" &
   EPR_LOCK_PID=$!
   for epr_i in $(seq 1 100); do [[ -e ${EPR}/lock-held ]] && break; sleep 0.1; done
-  expect_match 'env_prefix_lock: a second run waits, then refuses while another holds the lock' \
-    "$( (ENV_RENAME_LOCK_WAIT=1 env_prefix_lock) 2>&1; echo "rc=$?")" 'holds .*\.lock.*rc=1'
+  expect_match 'env_prefix_lock (root): a second run waits, then refuses while another holds the lock' \
+    "$( (_epr_is_root() { return 0; }; ENV_RENAME_LOCK_WAIT=1 env_prefix_lock) 2>&1; echo "rc=$?")" 'holds .*\.lock.*rc=1'
   printf 'go\n' >"${EPR}/lock-fifo"
   wait "${EPR_LOCK_PID}" 2>/dev/null || true
-  expect_eq 'env_prefix_lock: free again once the other run exits' "$( (ENV_RENAME_LOCK_WAIT=1 env_prefix_lock) 2>/dev/null; echo "rc=$?")" 'rc=0'
-  expect_eq 'env_prefix_lock: the backup root stays 0700' "$(epr_mode "${ENV_RENAME_BACKUP_ROOT}")" '700'
+  expect_eq 'env_prefix_lock (root): free again once the other run exits' \
+    "$( (_epr_is_root() { return 0; }; ENV_RENAME_LOCK_WAIT=1 env_prefix_lock) 2>/dev/null; echo "rc=$?")" 'rc=0'
+  expect_eq 'env_prefix_lock (root): the backup root stays 0700' "$(epr_mode "${ENV_RENAME_BACKUP_ROOT}")" '700'
+  if [[ ${EUID} -eq 0 ]]; then
+    # And for real: this pass IS root, so lib.sh's own _epr_is_root.
+    rm -rf "${ENV_RENAME_BACKUP_ROOT}"
+    expect_eq 'env_prefix_lock (real root): takes the lock, creating the 0700 root' \
+      "$( (eval "${EPR_SAVED_IS_ROOT}"; ENV_RENAME_LOCK_WAIT=1 env_prefix_lock) 2>/dev/null; echo "rc=$?"):$([[ -f ${ENV_RENAME_BACKUP_ROOT}/.lock ]] && epr_mode "${ENV_RENAME_BACKUP_ROOT}")" 'rc=0:700'
+  fi
 else
   log_warn 'flock not on PATH — skipping the env_prefix_lock cases (Linux hosts have it)'
 fi
+
+# --- Ruling 30: a non-root (sudo) run never locks, renames or reconciles ------
+export ENV_RENAME_BACKUP_ROOT="${EPR}/nonroot-bk"
+rm -rf "${ENV_RENAME_BACKUP_ROOT}"
+expect_match 'env_prefix_lock (non-root): no lock, a warning instead' \
+  "$( (_epr_is_root() { return 1; }; env_prefix_lock) 2>&1; echo "rc=$?")" 'the env-rename lock is not taken.*rc=0'
+expect_eq 'env_prefix_lock (non-root): creates nothing' "$([[ -e ${ENV_RENAME_BACKUP_ROOT} ]] && echo created || echo none)" 'none'
+# Nothing to rename (FICUS -> FICUS): proceeds exactly as before, no set.
+epr_host nonroot-clean '{"name":"ficus"}'
+for epr_f in "${SRC_DEST}/.env" "${FICUS_MANAGED_ENV_PATH}"; do envfile_rename_prefix "${epr_f}" TAU FICUS >/dev/null 2>&1; done
+for epr_f in "$(epr_unit api)" "$(epr_unit worker)" "$(epr_unit api).d/extra.conf"; do unitfile_rename_env_prefix "${epr_f}" TAU FICUS >/dev/null 2>&1; done
+expect_eq 'non-root, nothing to rename (FICUS->FICUS): migrate proceeds, makes no set' \
+  "$( (_epr_is_root() { return 1; }; migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel") >/dev/null 2>&1; echo "rc=$?"):$([[ -d ${ENV_RENAME_BACKUP_ROOT} ]] && echo set || echo none)" 'rc=0:none'
+# TAU -> TAU: nothing to rename either.
+epr_host nonroot-tau '{"name":"tau"}'
+expect_eq 'non-root, TAU->TAU: proceeds' \
+  "$( (_epr_is_root() { return 1; }; migrate_env_prefix_host TAU "${SRC_DEST}/releases/rel") >/dev/null 2>&1; echo "rc=$?")" 'rc=0'
+# A rename needed: refused, with the reason, nothing written.
+cp -p "${SRC_DEST}/.env" "${EPR}/nonroot.env.orig"
+expect_match 'non-root, a rename needed: refuses — run as root, and why' \
+  "$( (_epr_is_root() { return 1; }; migrate_env_prefix_host FICUS "${SRC_DEST}/releases/rel") 2>&1; echo "rc=$?")" 'must be renamed TAU_\* -> FICUS_\*.*root-only.*re-run this as root.*rc=1'
+expect_eq 'non-root, a rename needed: nothing written, no set' \
+  "$(cmp -s "${SRC_DEST}/.env" "${EPR}/nonroot.env.orig" && echo same):$([[ -d ${ENV_RENAME_BACKUP_ROOT} ]] && echo set || echo none)" 'same:none'
+expect_match 'require_env_rename_privilege: the early refusal is the same' \
+  "$( (_epr_is_root() { return 1; }; require_env_rename_privilege FICUS) 2>&1; echo "rc=$?")" 'root-only.*rc=1'
+expect_eq 'require_env_rename_privilege: a root run is never refused here' "$( (_epr_is_root() { return 0; }; require_env_rename_privilege FICUS) 2>&1; echo "rc=$?")" 'rc=0'
+# A journaled rename to reconcile: refused, with the reason.
+mkdir -p "${ENV_RENAME_BACKUP_ROOT}"
+: >"${ENV_RENAME_BACKUP_ROOT}/PENDING"
+expect_match 'non-root, a pending reconcile: refuses — root-only' \
+  "$( (_epr_is_root() { return 1; }; env_prefix_reconcile) 2>&1; echo "rc=$?")" 'reconciling it is root-only.*re-run this as root.*rc=1'
+rm -rf "${ENV_RENAME_BACKUP_ROOT}"
+expect_eq 'non-root, nothing journaled: the reconcile is a no-op' "$( (_epr_is_root() { return 1; }; env_prefix_reconcile) 2>&1; echo "rc=$?")" 'rc=0'
 
 # --- M12: git mode reads the TARGET's package.json before the checkout moves --
 if have git; then
@@ -6135,6 +6183,7 @@ else
 fi
 
 eval "${EPR_SAVED_AS_ROOT}"
+eval "${EPR_SAVED_IS_ROOT}"
 FICUS_SYSTEMD_UNIT_DIR=${EPR_SAVED_SYSTEMD_UNIT_DIR}
 FICUS_MANAGED_ENV_PATH=${EPR_SAVED_MANAGED_ENV_PATH}
 BACKUP_ENV_TARGET=${EPR_SAVED_BACKUP_ENV_TARGET}

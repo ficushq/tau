@@ -738,4 +738,65 @@ else
   printf 'FAIL: the setup-host.sh cases did not run — this suite requires them where it is ENABLED\n' >&2
 fi
 
+# ================== 10. a BYO non-root operator (sudo): Controller Ruling 30
+# The rename, restore and reconcile are root-only, and so is their lock. A
+# non-root run (the README's "supported BYO non-root upgrade": an operator
+# with non-interactive sudo) takes no lock and must go on exactly as before
+# when there is nothing to rename, and stop before writing anything when
+# there is. Opt-in: FICUS_TEST_SUDO_USER names an existing account with
+# NOPASSWD sudo that keeps PATH (the local container provides one; CI's
+# root runner has none to spare, so these cases are skipped there).
+run_script_as() { # USER ARTIFACT_ENV SCRIPT ARGS...
+  local user=$1 artifact_env=$2 script=$3
+  shift 3
+  local -a envs=()
+  mapfile -t envs < <(host_env)
+  [[ -z ${artifact_env} ]] || mapfile -t -O "${#envs[@]}" envs <"${artifact_env}"
+  RC=0
+  OUT=$(cd / && runuser -u "${user}" -- env "${envs[@]}" bash "${SCRIPT_DIR}/${script}" "$@" 2>&1) || RC=$?
+  verbose_out "${script} $* (as ${user})"
+}
+# Hand the fake host (and the shims' control files) to the operator.
+give_host_to() { # USER
+  chmod 0755 "${SCRATCH}"
+  chmod -R a+rwX "${CTL}"
+  chown -R "$1" "${H}"
+}
+SUDO_USER_T=${FICUS_TEST_SUDO_USER:-}
+if [[ -n ${SUDO_USER_T} ]] && id -u "${SUDO_USER_T}" >/dev/null 2>&1 &&
+  runuser -u "${SUDO_USER_T}" -- sudo -n true >/dev/null 2>&1; then
+  # Nothing to rename (already FICUS on a FICUS release): proceeds, no lock.
+  new_host sudo-ficus
+  printf '%s-*\n' "${SHA_NEW}" >>"${CTL}/healthy"
+  upgrade "${SCRATCH}/ficus.artifact.env"
+  expect_eq 'non-root fixture: the host is renamed (as root)' "${RC}:$(tau_names)" '0:0'
+  give_host_to "${SUDO_USER_T}"
+  rm -rf "${H:?}/bk"
+  snapshot "${H}/before-nonroot"
+  run_script_as "${SUDO_USER_T}" "${SCRATCH}/ficus.artifact.env" upgrade-host.sh --config "${CONFIG}"
+  expect_eq 'non-root (sudo) re-upgrade with nothing to rename: exits 0' "${RC}" '0'
+  [[ ${RC} -eq 0 ]] || printf '%s\n' "${OUT}" >&2
+  expect_match 'non-root (sudo) re-upgrade: warns that it takes no rename lock' "${OUT}" 'not running as root: the env-rename lock is not taken'
+  expect_eq 'non-root (sudo) re-upgrade: the env files are unchanged, and no backup root/lock was created' \
+    "$(same_as "${H}/before-nonroot"):$([[ -e ${H}/bk ]] && echo created || echo none)" 'same:none'
+
+  # A TAU host onto a Ficus release: the rename is needed -> refused, early.
+  new_host sudo-tau
+  printf '%s-*\n' "${SHA_NEW}" >>"${CTL}/healthy"
+  give_host_to "${SUDO_USER_T}"
+  run_script_as "${SUDO_USER_T}" "${SCRATCH}/ficus.artifact.env" upgrade-host.sh --config "${CONFIG}"
+  expect_eq 'non-root (sudo) upgrade that needs the rename: refused' "${RC}" '1'
+  expect_match 'non-root (sudo) upgrade that needs the rename: says why and to re-run as root' "${OUT}" 'must be renamed TAU_\* -> FICUS_\* for the Ficus Core release .* the rename is root-only .* re-run this as root'
+  expect_eq 'non-root (sudo) upgrade that needs the rename: nothing written, no set, the old release still active' \
+    "$(same_as "${H}/pristine"):$([[ -e ${H}/bk ]] && echo created || echo none):$(readlink "${DEST}/current")" "same:none:${OLD_REL}"
+  expect_eq 'non-root (sudo) upgrade that needs the rename: nothing was restarted' "$(grep -c 'systemctl restart' "${CALLS}" || true)" '0'
+
+  # --restore-env-backup is root-only.
+  run_script_as "${SUDO_USER_T}" '' upgrade-host.sh --config "${CONFIG}" --restore-env-backup "${H}/nope"
+  expect_eq 'non-root (sudo) --restore-env-backup: refused' "${RC}" '1'
+  expect_match 'non-root (sudo) --restore-env-backup: says it is root-only' "${OUT}" '--restore-env-backup is root-only'
+else
+  printf 'SKIP: the non-root (sudo) cases (set FICUS_TEST_SUDO_USER to an account with NOPASSWD sudo)\n' >&2
+fi
+
 summary

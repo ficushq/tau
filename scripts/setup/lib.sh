@@ -3468,6 +3468,12 @@ ENV_RENAME_PENDING=0
 ENV_RENAME_BACKUP_SET=''
 
 _epr_is_prefix() { [[ $1 == FICUS || $1 == TAU ]]; }
+
+# The rename, the restore and the reconcile write root-owned files (the backup
+# root, managed.env, backup.env, the units) and are ROOT-ONLY (Controller
+# Ruling 30). A non-root (sudo) run takes no lock and proceeds only while none
+# of them is needed; it refuses otherwise, with the reason.
+_epr_is_root() { [[ ${EUID} -eq 0 ]]; }
 _epr_require_prefixes() { # CALLER FROM TO
   if ! _epr_is_prefix "$2" || ! _epr_is_prefix "$3"; then
     die "$1: prefixes must be TAU or FICUS (got '$2' -> '$3')"
@@ -4419,7 +4425,9 @@ _env_prefix_rename_files() { # [--no-units]
 # backup set (see the section header). TAU as the target renames nothing and
 # refuses a host whose settings are already FICUS_. Leaves ENV_RENAME_PENDING=1
 # after renaming: the caller commits (env_prefix_commit) once the release that
-# reads the new names is serving, and the traps restore otherwise.
+# reads the new names is serving; otherwise the traps settle it by the active
+# release (env_prefix_settle_pending). Root-only: a non-root run refuses when a
+# rename is needed (require_env_rename_privilege) and proceeds otherwise.
 migrate_env_prefix_host() { # TARGET [RELEASE_DIR]
   local target=$1 release=${2:-} root current listing f kind c conflicts='' need=0 no_units=''
   local -a files=()
@@ -4435,6 +4443,11 @@ migrate_env_prefix_host() { # TARGET [RELEASE_DIR]
     die "target Core predates the Ficus rename but this host's settings are FICUS_*; re-run with --restore-env-backup <set> (see ${root}) or choose a Ficus release"
   fi
   if [[ ${target} == TAU ]]; then
+    return 0
+  fi
+  if ! _epr_is_root; then
+    require_env_rename_privilege FICUS
+    log_info "env prefix: nothing this (non-root) run can read needs renaming"
     return 0
   fi
   [[ ${ARTIFACT_CONVERTED_THIS_RUN:-0} -eq 1 ]] && no_units=--no-units
@@ -4479,7 +4492,7 @@ migrate_env_prefix_host() { # TARGET [RELEASE_DIR]
     die "could not create the env backup set — nothing was renamed"
   ENV_RENAME_BACKUP_SET=${ENV_RENAME_BACKUP_SET%$'\n'}
   ENV_RENAME_PENDING=1
-  log_info "renaming this host's TAU_* settings to FICUS_* (backup set ${ENV_RENAME_BACKUP_SET}; restored automatically if this run fails)"
+  log_info "renaming this host's TAU_* settings to FICUS_* (backup set ${ENV_RENAME_BACKUP_SET}; if this run fails, it is restored before the flip or finished forward after it)"
   # shellcheck disable=SC2086 # an empty ${no_units} must vanish, not pass ''
   _env_prefix_rename_files ${no_units}
   _epr_sync_files "${files[@]}" || die "could not flush the renamed env files to disk"
@@ -4565,6 +4578,15 @@ _env_prefix_finish_forward() { # SETDIR
 env_prefix_reconcile() {
   local root raw line setdir target release rc=0
   root=$(env_rename_backup_root)
+  if ! _epr_is_root; then
+    if [[ -e ${root}/PENDING ]]; then
+      die "an interrupted upgrade left an env rename journaled in ${root}/PENDING, and reconciling it is root-only (it restores or finishes root-owned env files) — re-run this as root"
+    fi
+    if [[ -d ${root} && ! -x ${root} ]]; then
+      log_warn "cannot look for a journaled env rename in ${root} as a non-root user; if an upgrade was interrupted, re-run this as root"
+    fi
+    return 0
+  fi
   [[ -e ${root}/PENDING ]] || return 0
   read_file_exact "${root}/PENDING" raw || die "could not read ${root}/PENDING"
   line=${raw%%$'\n'*}
@@ -4688,6 +4710,10 @@ env_prefix_install_traps() {
 env_prefix_lock() {
   local root
   root=$(env_rename_backup_root)
+  if ! _epr_is_root; then
+    log_warn "not running as root: the env-rename lock is not taken — this run goes on only while this host needs no env rename, restore or reconcile (those are root-only)"
+    return 0
+  fi
   if ! have flock; then
     log_warn "flock is not installed — toolkit runs on this host are not serialized"
     return 0
@@ -4698,6 +4724,28 @@ env_prefix_lock() {
   exec 9>>"${root}/.lock" || die "could not open ${root}/.lock"
   flock -w "${ENV_RENAME_LOCK_WAIT:-900}" 9 ||
     die "another toolkit run on this host holds ${root}/.lock (an upgrade, setup or artifact sync) — wait for it to finish and re-run"
+}
+
+# Controller Ruling 30: refuse, early and with the reason, a NON-ROOT run that
+# would have to rename this host's settings to TARGET. Only the files this
+# user can read are looked at (the rest are root-owned; a root run renames
+# them). A root run, a TAU target, or nothing to rename: returns 0.
+require_env_rename_privilege() { # TARGET
+  local listing f kind
+  _epr_is_root && return 0
+  [[ $1 == FICUS ]] || return 0
+  listing=$(host_env_files) || die "could not list this host's env files"
+  while IFS= read -r f; do
+    [[ -n ${f} && -r ${f} ]] || continue
+    kind=dotenv
+    [[ ${f} == "$(readlink -f -- "${CFG_FILE:-/nonexistent}" 2>/dev/null)" ]] && kind=yaml
+    [[ ${f} == *.service || ${f} == *.conf ]] && kind=unit
+    [[ ${f} == "$(readlink -f -- "${BACKUP_SCRIPT_PATH}" 2>/dev/null)" ]] && kind=backup_script
+    if _epr_needs_rename "${f}" "${kind}"; then
+      die "this host's settings must be renamed TAU_* -> FICUS_* for the Ficus Core release (${f} still uses TAU_ names), and the rename is root-only (it backs up and rewrites root-owned env files and units) — re-run this as root"
+    fi
+  done <<<"${listing}"
+  return 0
 }
 
 # Refuse to run a FICUS_-only primitive on a host that was never renamed

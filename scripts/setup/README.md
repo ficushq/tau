@@ -111,6 +111,13 @@ invoking operator must either be root or have non-interactive sudo, the
 configured `core.run_user` account must already exist, and Bun source discovery
 must succeed from the invoking operator's `PATH` or `HOME/.bun/bin`; setup then
 copies that executable into the managed system path before switching identity.
+The Ficus env rename (below) is root-only: a non-root run takes no rename
+lock (it warns instead) and goes on exactly as before as long as the host
+needs no rename, restore or reconcile — a `TAU_*` host staying on a
+pre-rename release, or a host already on `FICUS_*`. When the run would have to
+rename `TAU_*` → `FICUS_*`, finish a journaled rename, or restore a set
+(`--restore-env-backup`), it stops before changing anything and says so:
+re-run it as root.
 
 Do NOT hand-roll this sequence. `tau-api` runs `bun run dist/index.js`, so a
 fetch without the core build leaves the OLD server running while `git log` on
@@ -178,7 +185,16 @@ release on an already renamed host is refused (see `--restore-env-backup`).
   each rename is idempotent, so a half-renamed host is always finished, never
   skipped. Toolkit runs that can rename, restore or reconcile (upgrade,
   setup, `apply-artifacts.sh --config`, `--restore-env-backup`) take an
-  exclusive `flock` on `/var/backups/ficus-env-rename/.lock` first.
+  exclusive `flock` on `/var/backups/ficus-env-rename/.lock` first, when run
+  as root (the lock, like the rename, is root-only; a non-root run skips it
+  with a warning and refuses if a rename, restore or reconcile is needed).
+  The wait for the lock is capped at 900 s (`ENV_RENAME_LOCK_WAIT`).
+- **A failed git-mode build.** In git mode the checkout moves to the Ficus
+  commit before the build, and the rename runs only after the build, just
+  before the restart. If the build fails in between, the host is left with
+  `TAU_*` files, a Ficus checkout and no journal. That is safe: the old
+  `dist/` keeps serving on `TAU_*`, a Ficus build would still read them
+  through its one-release fallback, and the next successful upgrade renames.
 - **Units after a conversion.** When the same upgrade converts a git checkout
   to the artifact layout, the units are left out of the set; a restore
   re-renders them for the current layout with `TAU_ROOT` instead of copying
@@ -201,6 +217,11 @@ pre-rename Core or running an older toolkit on a renamed host. Two caveats:
   one needs this toolkit or newer: an older `setup-host.sh` looks only for
   `TAU_ENCRYPTION_KEY` in the archive and dies. (This toolkit reads either
   spelling, permanently, and never generates a new key while either exists.)
+- a restore does not move the release: if a Ficus release is serving, it now
+  runs on `TAU_*` only through its one-release fallback, and syncs
+  (`apply-artifacts.sh --config`) refuse with an env-prefix mismatch until
+  you downgrade to a pre-rename release.
+  It is root-only, like the rename.
 
 `apply-artifacts.sh --config <yaml> <stage>` (what the control plane's sync
 runs) refuses to install anything — exit 3, `FICUS_ENV_PREFIX_MISMATCH=1` on

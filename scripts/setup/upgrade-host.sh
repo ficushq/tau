@@ -118,6 +118,9 @@ done
 # file verified against its MANIFEST sha256), clear the journal when it names
 # this set, and exit. Nothing else in this script runs.
 if [[ -n ${RESTORE_ENV_SET} ]]; then
+  # First: a non-root caller cannot even see into the root 0700 set root.
+  [[ ${EUID} -eq 0 ]] ||
+    die "--restore-env-backup is root-only (it restores root-owned env files and units from ${RESTORE_ENV_SET}, a root 0700 set) — re-run this as root"
   [[ -d ${RESTORE_ENV_SET} ]] || die "--restore-env-backup: '${RESTORE_ENV_SET}' is not a directory"
   RESTORE_ENV_SET=$(readlink -f -- "${RESTORE_ENV_SET}") || die "--restore-env-backup: could not resolve the set path"
   if [[ -n ${CONFIG} ]]; then
@@ -134,7 +137,6 @@ if [[ -n ${RESTORE_ENV_SET} ]]; then
   elif [[ -e ${RESTORE_ENV_SET}/UNITS_EXCLUDED ]]; then
     die "--restore-env-backup: ${RESTORE_ENV_SET} was taken during a git->artifact conversion, so restoring it re-renders the core units — pass --config <the host's tau-setup.yaml> as well"
   fi
-  require_root_capability
   env_prefix_lock
   restore_rc=0
   env_rename_backup_restore "${RESTORE_ENV_SET}" || restore_rc=$?
@@ -228,10 +230,12 @@ BUN_BIN=/usr/local/bin/bun
 # First, before any preflight: a journaled env rename that an earlier run
 # left behind (killed, OOM, reboot) is made to match the release that is
 # serving right now — restored if it reads TAU_*, finished if it reads
-# FICUS_*. Then the traps that restore THIS run's rename if it fails, is
-# rolled back or is signalled (bash runs an EXIT trap with $?=0 on a signal,
-# hence the explicit TERM/HUP/INT ones).
-# One toolkit run at a time may rename, restore or reconcile this host.
+# FICUS_*. Then the traps that settle THIS run's rename if it fails, is
+# rolled back or is signalled — restored while the old release is active,
+# finished forward once the new one is (Ruling 29; bash runs an EXIT trap with
+# $?=0 on a signal, hence the explicit TERM/HUP/INT ones).
+# One toolkit run at a time may rename, restore or reconcile this host (the
+# lock, like those steps, is root-only: Ruling 30).
 env_prefix_lock
 reconcile_rc=0
 env_prefix_reconcile || reconcile_rc=$?
@@ -364,6 +368,9 @@ artifact_upgrade() {
   if [[ ${target_prefix} == TAU && $(host_env_prefix "${SRC_DEST}/.env") == FICUS ]]; then
     die "target Core predates the Ficus rename but this host's settings are FICUS_*; re-run with --restore-env-backup <set> (see $(env_rename_backup_root)) or choose a Ficus release"
   fi
+  # A non-root (sudo) run cannot do the rename this release needs: refuse
+  # now, before the candidate migration (Ruling 30).
+  require_env_rename_privilege "${target_prefix}"
 
   log_step "artifact upgrade 4/5: env settings and systemd units are prepared right before the flip"
   # Both happen inside artifact_activate's pre-flip hook
@@ -448,6 +455,7 @@ git_target_prefix_check() { # REV
   if [[ ${GIT_TARGET_PREFIX} == TAU && $(host_env_prefix "${SRC_DEST}/.env") == FICUS ]]; then
     die "target Core predates the Ficus rename but this host's settings are FICUS_*; re-run with --restore-env-backup <set> (see $(env_rename_backup_root)) or choose a Ficus release"
   fi
+  require_env_rename_privilege "${GIT_TARGET_PREFIX}"
 }
 
 log_step "phase 1/4: source → ${SRC_REF}"
@@ -472,8 +480,9 @@ fi
 # The env rename, immediately before the restart: the new checkout's
 # migrations above already read the old names through its in-process bridge,
 # so renaming as late as possible only shrinks the window. Git mode has no
-# auto-rollback: a failed restart restores the backup set over the new
-# checkout (the EXIT trap), which that release's one-release fallback boots.
+# auto-rollback, and the checkout has already moved to the Ficus release: a
+# failed restart therefore keeps the rename and commits it (the EXIT trap
+# settles by the active release, Ruling 29).
 migrate_env_prefix_host "${GIT_TARGET_PREFIX}" "${SRC_DEST}"
 
 log_step "phase 4/4: restart tau-api + tau-worker"
