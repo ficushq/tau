@@ -40,11 +40,13 @@ beforeEach(() => {
     `#!/bin/sh\nmkdir -p "$HOME/.tau/bin"\ncat > "$HOME/.tau/bin/tau" <<'TAUEOF'\n#!/bin/sh\necho "tau $*" >> ${log}\nTAUEOF\nchmod +x "$HOME/.tau/bin/tau"\n`
   )
   // stub curl: record argv, then hand the installer body to the `| sh` pipe
-  // TAU_INSTALL_AUTH is logged too: setup.sh must install the CLI without the
-  // installer's auth prompt (it runs unattended under `curl | bash`).
+  // FICUS_INSTALL_AUTH is logged too: setup.sh must install the CLI without the
+  // installer's auth prompt (it runs unattended under `curl | bash`). The
+  // TAU_INSTALL_AUTH twin is logged as well: the published installer may still
+  // predate the Ficus rename for one release, so setup.sh hands it both names.
   writeFileSync(
     join(tmp, 'bin', 'curl'),
-    `#!/bin/sh\necho "curl $* TAU_INSTALL_AUTH=$TAU_INSTALL_AUTH" >> "${log}"\ncat "${installer}"\n`
+    `#!/bin/sh\necho "curl $* FICUS_INSTALL_AUTH=$FICUS_INSTALL_AUTH TAU_INSTALL_AUTH=$TAU_INSTALL_AUTH" >> "${log}"\ncat "${installer}"\n`
   )
   writeFileSync(join(tmp, 'bin', 'git'), `#!/bin/sh\nexit 0\n`)
   chmodSync(join(tmp, 'bin', 'curl'), 0o755)
@@ -66,19 +68,29 @@ describe('scripts/setup.sh', () => {
     const r = run(['--runtime', 'host', '--yes'])
     expect(r.exitCode).toBe(0)
     const lines = readFileSync(log, 'utf8').trim().split('\n')
-    expect(lines[0]).toBe('curl -fsSL https://ficus.sh/cli/install.sh TAU_INSTALL_AUTH=0')
+    expect(lines[0]).toBe('curl -fsSL https://ficus.sh/cli/install.sh FICUS_INSTALL_AUTH=0 TAU_INSTALL_AUTH=0')
     expect(lines[1]).toBe('tau server install --runtime host --yes')
   })
-  it('honours TAU_INSTALL_URL', () => {
-    const r = run([], { TAU_INSTALL_URL: 'https://example/i.sh' })
+  it('honours FICUS_INSTALL_URL', () => {
+    const r = run([], { FICUS_INSTALL_URL: 'https://example/i.sh' })
     expect(r.exitCode).toBe(0)
     expect(readFileSync(log, 'utf8')).toContain('curl -fsSL https://example/i.sh')
   })
-  it('skips the CLI install when the binary exists and TAU_SETUP_SKIP_CLI_INSTALL=1', () => {
+  it('still honours the legacy TAU_INSTALL_URL for one release (Ficus rename)', () => {
+    const r = run([], { TAU_INSTALL_URL: 'https://example/legacy.sh' }) // legacy-env
+    expect(r.exitCode).toBe(0)
+    expect(readFileSync(log, 'utf8')).toContain('curl -fsSL https://example/legacy.sh')
+  })
+  it('prefers FICUS_INSTALL_URL over TAU_INSTALL_URL when both are set', () => {
+    const r = run([], { FICUS_INSTALL_URL: 'https://example/new.sh', TAU_INSTALL_URL: 'https://example/old.sh' })
+    expect(r.exitCode).toBe(0)
+    expect(readFileSync(log, 'utf8')).toContain('curl -fsSL https://example/new.sh')
+  })
+  it('skips the CLI install when the binary exists and FICUS_SETUP_SKIP_CLI_INSTALL=1', () => {
     mkdirSync(join(tmp, '.tau', 'bin'), { recursive: true })
     writeFileSync(join(tmp, '.tau', 'bin', 'tau'), `#!/bin/sh\necho "tau $*" >> "${log}"\n`)
     chmodSync(join(tmp, '.tau', 'bin', 'tau'), 0o755)
-    const r = run(['--dry-run'], { TAU_SETUP_SKIP_CLI_INSTALL: '1' })
+    const r = run(['--dry-run'], { FICUS_SETUP_SKIP_CLI_INSTALL: '1' })
     expect(r.exitCode).toBe(0)
     expect(readFileSync(log, 'utf8').trim()).toBe('tau server install --dry-run')
   })

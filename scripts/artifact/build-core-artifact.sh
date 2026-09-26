@@ -60,12 +60,17 @@ OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 # does connect, it fails immediately instead of hanging on an unroutable host
 # while CI burns its timeout.
 export DATABASE_URL="${DATABASE_URL:-postgres://build:build@localhost:5432/build}"
-# A builder must never inherit test or root-relocation state: TAU_TEST_MODE
-# swaps in test doubles, and TAU_ROOT/TAU_REPO_ROOT would point the builds and
+# A builder must never inherit test or root-relocation state: FICUS_TEST_MODE
+# swaps in test doubles, and FICUS_ROOT/FICUS_REPO_ROOT would point the builds and
 # the machine-bundle prebuild at a DIFFERENT tree than the one we are staging.
-unset TAU_TEST_MODE
-unset TAU_ROOT
-unset TAU_REPO_ROOT
+unset FICUS_TEST_MODE
+unset FICUS_ROOT
+unset FICUS_REPO_ROOT
+# ...and their legacy spellings, for one release (Ficus rename): the in-process
+# bridge would promote an inherited TAU_ name to FICUS_ inside the build.
+unset TAU_TEST_MODE # legacy-env
+unset TAU_ROOT # legacy-env
+unset TAU_REPO_ROOT # legacy-env
 
 # --- prerequisites ---
 if ! COMMIT="$(git rev-parse HEAD 2>/dev/null)"; then

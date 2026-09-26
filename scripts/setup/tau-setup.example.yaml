@@ -25,7 +25,7 @@ source:
   # git-https  clone over HTTPS with a token (GH_TOKEN env var, or prompted).
   # artifact   fetch, verify and stage a signed prebuilt release bundle — a
   #            tenant-only seam driven by a cloud control plane. The four
-  #            TAU_ARTIFACT_TARBALL_URL/_MANIFEST_URL/_SIG_URL/_PUBKEY_B64
+  #            FICUS_ARTIFACT_TARBALL_URL/_MANIFEST_URL/_SIG_URL/_PUBKEY_B64
   #            inputs arrive via the ENVIRONMENT (secrets.env), never here:
   #            three are presigned GET credentials, and this file is not
   #            where credentials belong.
@@ -48,7 +48,7 @@ source:
 # -----------------------------------------------------------------------------
 core:
   # The BROWSER-FACING origin: scheme://host[:port], NO trailing path or slash.
-  # Becomes APP_URL and TAU_WEB_ORIGIN. If this does not exactly match what the
+  # Becomes APP_URL and FICUS_WEB_ORIGIN. If this does not exactly match what the
   # browser shows in the address bar, WebAuthn passkey registration fails
   # silently — the #1 setup footgun.
   # For an exe VM this is https://<provision.name>.exe.xyz:<core.port>. For a
@@ -82,9 +82,9 @@ core:
   #                                 Setup dies if $ENV_VAR is unset.
   # Example:
   #   env:
-  #     TAU_MAX_MACHINES: '10'
-  #     TAU_PLATFORM_INGEST_URL: https://ingest.ficus.sh
-  #     TAU_PLATFORM_USAGE_TOKEN_ENV: PLATFORM_USAGE_TOKEN
+  #     FICUS_MAX_MACHINES: '10'
+  #     FICUS_PLATFORM_INGEST_URL: https://ingest.ficus.sh
+  #     FICUS_PLATFORM_USAGE_TOKEN_ENV: PLATFORM_USAGE_TOKEN
   env: {}
 
 # -----------------------------------------------------------------------------
@@ -144,9 +144,9 @@ backup:
   # values themselves. Same *_env indirection convention as secrets.* above.
   # Rendered into a 0600 root-owned /etc/tau/backup.env; never written into
   # <dest>/.env (the file the backup itself archives).
-  s3_access_key_env: TAU_BACKUP_S3_ACCESS_KEY
-  s3_secret_key_env: TAU_BACKUP_S3_SECRET_KEY
-  passphrase_env: TAU_BACKUP_PASSPHRASE
+  s3_access_key_env: FICUS_BACKUP_S3_ACCESS_KEY
+  s3_secret_key_env: FICUS_BACKUP_S3_SECRET_KEY
+  passphrase_env: FICUS_BACKUP_PASSPHRASE
   # Daily run time, HH:MM 24h UTC — becomes the systemd timer's OnCalendar=.
   schedule: '03:15'
 
@@ -160,7 +160,7 @@ database:
   mode: container
   # Required when mode=external, e.g. postgres://user:pass@host:5432/tau
   # (a DSN embeds a password, so prefer supplying it via the
-  #  TAU_SETUP_DATABASE_DSN environment variable instead of writing it here).
+  #  FICUS_SETUP_DATABASE_DSN environment variable instead of writing it here).
   dsn: ''
   # Path to the CA certificate that signed the external database server's
   # certificate — ON THE MACHINE RUNNING THIS SCRIPT. provision.sh scp's it to
@@ -250,7 +250,7 @@ squad:
 # -----------------------------------------------------------------------------
 # Instance secrets. Both are generated if the named env vars are unset/empty.
 # On re-runs, values already present in <dest>/.env are REUSED (regenerating
-# TAU_ENCRYPTION_KEY would orphan the encrypted secret store).
+# FICUS_ENCRYPTION_KEY would orphan the encrypted secret store).
 # -----------------------------------------------------------------------------
 secrets:
   # Env var holding a 32-byte hex encryption key for the DB secret store.

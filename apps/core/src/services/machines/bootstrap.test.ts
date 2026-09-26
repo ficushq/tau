@@ -176,7 +176,7 @@ describe('machine script docker contract', () => {
     expect(boxProvisionSh).toContain('--with-docker')
     expect(boxProvisionSh).toContain('dockerd-rootless-setuptool.sh install')
     // The uid marker box-manager parses to bake DOCKER_HOST.
-    expect(boxProvisionSh).toContain("printf 'TAU_BOX_UID=%s\\n'")
+    expect(boxProvisionSh).toContain("printf 'FICUS_BOX_UID=%s\\n'")
     // Docker provisioning must be conditional (agent light boxes skip it).
     expect(boxProvisionSh).toContain('if [ "${WITH_DOCKER}" = true ]; then')
   })
@@ -294,8 +294,8 @@ describe('machine script docker contract', () => {
     // pre-creates them (ensureArtifact's `install -D` also creates parents —
     // belt and braces, and the dir exists even before the first push).
     expect(bootstrapSh).toContain('/opt/tau/cli')
-    expect(bootstrapSh).toContain('"${TAU_ROOT}/cli"')
-    expect(bootstrapSh).toContain('"${TAU_ROOT}/server"')
+    expect(bootstrapSh).toContain('"${FICUS_ROOT}/cli"')
+    expect(bootstrapSh).toContain('"${FICUS_ROOT}/server"')
   })
 
   it('bootstrap.sh installs the pinned nix + devbox toolchain box users need for devbox install', () => {
@@ -893,7 +893,7 @@ describe('browser tools Phase 1 — Playwright pin lockstep + wiring', () => {
     }
     // Each source invokes cli.js under bun via its own stable bun path.
     expect(bootstrapSh).toContain(
-      '"${BUN_BIN_LINK}" "${TAU_BROWSER_ROOT}/node_modules/playwright/cli.js" install --with-deps chromium'
+      '"${BUN_BIN_LINK}" "${FICUS_BROWSER_ROOT}/node_modules/playwright/cli.js" install --with-deps chromium'
     )
     expect(machineImageDockerfile).toContain(
       '/opt/tau/bin/bun /opt/tau/browser/node_modules/playwright/cli.js install --with-deps chromium'
@@ -933,7 +933,7 @@ describe('browser tools Phase 1 — Playwright pin lockstep + wiring', () => {
     // re-download forever. timeout sits INSIDE sudo so its process-group kill
     // reaches the extractor.
     expect(bootstrapSh).toContain(
-      'DEBIAN_FRONTEND=noninteractive \\\n        timeout -k 30 "${BROWSER_DOWNLOAD_TIMEOUT_SECS}" \\\n        "${BUN_BIN_LINK}" "${TAU_BROWSER_ROOT}/node_modules/playwright/cli.js" install --with-deps chromium \\\n        && break'
+      'DEBIAN_FRONTEND=noninteractive \\\n        timeout -k 30 "${BROWSER_DOWNLOAD_TIMEOUT_SECS}" \\\n        "${BUN_BIN_LINK}" "${FICUS_BROWSER_ROOT}/node_modules/playwright/cli.js" install --with-deps chromium \\\n        && break'
     )
     expect(bootstrapSh).toContain('for attempt in $(seq 1 "${BROWSER_DOWNLOAD_ATTEMPTS}"); do')
     // Every attempt together must leave room inside Core's 15-minute bootstrap run.
@@ -1019,11 +1019,11 @@ describe('browser tools Phase 1 — softened sandbox gate (never fails bootstrap
 
   it('the unavailable path writes a durable marker (reason + timestamp), is LOUD, and never uses --no-sandbox', () => {
     const body = funcBody('browser_mark_unavailable')
-    expect(body).toContain('${TAU_BROWSER_UNAVAILABLE_MARKER}')
+    expect(body).toContain('${FICUS_BROWSER_UNAVAILABLE_MARKER}')
     expect(body).toContain('reason=%s')
     expect(body).toContain('timestamp=%s')
     // Refuses to leave a stale "available" marker.
-    expect(body).toMatch(/rm -f "\$\{TAU_BROWSER_READY_MARKER\}"/)
+    expect(body).toMatch(/rm -f "\$\{FICUS_BROWSER_READY_MARKER\}"/)
     // LOUD + control-plane observable (journald): an ERROR-level line.
     expect(body).toContain('ERROR browser unavailable')
     // Never downgrades to an unsafe browser.
@@ -1036,8 +1036,8 @@ describe('browser tools Phase 1 — softened sandbox gate (never fails bootstrap
 
   it('the ready path writes READY and clears any stale UNAVAILABLE', () => {
     const body = funcBody('browser_mark_ready')
-    expect(body).toContain('${TAU_BROWSER_READY_MARKER}')
-    expect(body).toMatch(/rm -f "\$\{TAU_BROWSER_UNAVAILABLE_MARKER\}"/)
+    expect(body).toContain('${FICUS_BROWSER_READY_MARKER}')
+    expect(body).toMatch(/rm -f "\$\{FICUS_BROWSER_UNAVAILABLE_MARKER\}"/)
   })
 
   it('print_capabilities reports browser availability to the control plane in both states', () => {
@@ -1099,14 +1099,14 @@ describe('browser tools Phase 1 — softened sandbox gate (never fails bootstrap
     // runs as root from /root (0700), which tau-browser cannot enter, and runuser
     // keeps the caller's CWD — so the check MUST cd into an accessible dir first.
     const body = funcBody('verify_browser')
-    // The runuser/bun sandbox check is wrapped in a `cd "${TAU_BROWSER_ROOT}"`
-    // subshell (${TAU_BROWSER_ROOT} is chmod a+rX, so the tau-browser user can
+    // The runuser/bun sandbox check is wrapped in a `cd "${FICUS_BROWSER_ROOT}"`
+    // subshell (${FICUS_BROWSER_ROOT} is chmod a+rX, so the tau-browser user can
     // stat it) rather than inheriting bootstrap's inaccessible CWD.
     expect(body).toMatch(
-      /\(\s*cd "\$\{TAU_BROWSER_ROOT\}" &&\s*"\$\{SUDO\[@\]\}" runuser -u "\$\{TAU_BROWSER_USER\}"[\s\S]*?TAU_BROWSER_VERIFY_JS\}"\s*\)/
+      /\(\s*cd "\$\{FICUS_BROWSER_ROOT\}" &&\s*"\$\{SUDO\[@\]\}" runuser -u "\$\{FICUS_BROWSER_USER\}"[\s\S]*?FICUS_BROWSER_VERIFY_JS\}"\s*\)/
     )
     // The bare, CWD-inheriting form (runuser at the start of the `if !`) is gone.
-    expect(body).not.toMatch(/if ! "\$\{SUDO\[@\]\}" runuser -u "\$\{TAU_BROWSER_USER\}"/)
+    expect(body).not.toMatch(/if ! "\$\{SUDO\[@\]\}" runuser -u "\$\{FICUS_BROWSER_USER\}"/)
   })
 
   it('the new install/setup reason tokens are part of the surfaced vocabulary', () => {
@@ -1141,16 +1141,19 @@ describe('browser tools Phase 2 — machine plumbing (group membership, socket e
     expect(body).not.toMatch(/\bexit\b/)
   })
 
-  it('render_unit (box-provision.sh) carries TAU_BROWSER_SOCK in BOTH unit modes so the box server can reach the socket', () => {
+  it('render_unit (box-provision.sh) carries FICUS_BROWSER_SOCK in BOTH unit modes so the box server can reach the socket', () => {
     const body = funcBodyIn(boxProvisionSh, 'render_unit')
     // One occurrence per unit-mode branch (system + user): a box must reach the
     // browser socket no matter which manager runs its server.
-    expect(body.match(/Environment=TAU_BROWSER_SOCK=\/run\/tau-browser\/sock/g)).toHaveLength(2)
+    expect(body.match(/Environment=FICUS_BROWSER_SOCK=\/run\/tau-browser\/sock/g)).toHaveLength(2)
   })
 
-  it('write_browser_memory_dropin (bootstrap.sh) writes BOTH MemoryHigh and TAU_BROWSER_MEMORY_HIGH_MB from the same computed cap', () => {
+  it('write_browser_memory_dropin (bootstrap.sh) writes MemoryHigh and both *_BROWSER_MEMORY_HIGH_MB spellings from the same computed cap', () => {
     const body = funcBodyIn(bootstrapSh, 'write_browser_memory_dropin')
     expect(body).toMatch(/MemoryHigh=%sM/)
+    expect(body).toMatch(/Environment=FICUS_BROWSER_MEMORY_HIGH_MB=%s/)
+    // One release (Ficus rename): a prebaked image's baked tau-browser.js may
+    // still read only the TAU_ name, and this drop-in is rewritten per boot.
     expect(body).toMatch(/Environment=TAU_BROWSER_MEMORY_HIGH_MB=%s/)
     // Both format placeholders are fed from the same computed mem_high_mb
     // variable (the printf call passes it at least twice).
@@ -1231,7 +1234,7 @@ describe('box-provision.sh validation (unprivileged — must exit BEFORE any sud
 
   it('requires --port on the provision path (exit 2 when omitted)', async () => {
     // No --remove → provisioning → an empty port would otherwise bake
-    // `Environment=TAU_BOX_PORT=` into the unit. The script must refuse it
+    // `Environment=FICUS_BOX_PORT=` into the unit. The script must refuse it
     // BEFORE any privileged call.
     const { exitCode } = await runBoxProvision(['--sandbox-id', 'x', '--unix-user', 'box_0123456789ab'])
     expect(exitCode).toBe(2)
@@ -1960,8 +1963,8 @@ describe('box-provision.sh unit modes (--print-units dry run)', () => {
         'Group=box_abc123abc123',
         'WorkingDirectory=/home/box_abc123abc123',
         'RuntimeDirectory=tau-box-box_abc123abc123',
-        'Environment=TAU_BOX_PORT=50100',
-        'Environment=TAU_BROWSER_SOCK=/run/tau-browser/sock',
+        'Environment=FICUS_BOX_PORT=50100',
+        'Environment=FICUS_BROWSER_SOCK=/run/tau-browser/sock',
         'Environment=EXECUTOR_SOCKET=/run/tau-box-box_abc123abc123/server.sock',
         'Environment=EXECUTOR_IDLE_EXIT_MS=600000',
         'EnvironmentFile=-/home/box_abc123abc123/.tau/host.env',
@@ -2031,8 +2034,8 @@ describe('box-provision.sh unit modes (--print-units dry run)', () => {
         '[Service]',
         'Type=simple',
         'RuntimeDirectory=tau-sandbox',
-        'Environment=TAU_BOX_PORT=50100',
-        'Environment=TAU_BROWSER_SOCK=/run/tau-browser/sock',
+        'Environment=FICUS_BOX_PORT=50100',
+        'Environment=FICUS_BROWSER_SOCK=/run/tau-browser/sock',
         'Environment=EXECUTOR_SOCKET=%t/tau-sandbox/server.sock',
         'Environment=EXECUTOR_IDLE_EXIT_MS=600000',
         'EnvironmentFile=-%h/.tau/host.env',

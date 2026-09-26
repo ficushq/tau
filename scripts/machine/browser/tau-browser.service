@@ -11,7 +11,7 @@ RuntimeDirectory=tau-browser
 RuntimeDirectoryMode=0750
 Environment=HOME=/opt/tau/browser/home
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/tau/browser/ms-playwright
-Environment=TAU_BROWSER_SOCK=/run/tau-browser/sock
+Environment=FICUS_BROWSER_SOCK=/run/tau-browser/sock
 ExecStart=/opt/tau/bin/bun /opt/tau/browser/service/tau-browser.js
 Restart=on-failure
 RestartSec=2

@@ -33,7 +33,7 @@
 #   5. read both installed files back and require them byte-identical to
 #      what was verified in step 1
 #
-# Untouched, by design: the backup passphrase (TAU_BACKUP_PASSPHRASE is read
+# Untouched, by design: the backup passphrase (FICUS_BACKUP_PASSPHRASE is read
 # from the live backup.env and written back with the same value — a changed
 # passphrase would make every existing backup unrestorable with the new
 # config), tau-backup.timer/.service (the schedule), backup.s3_prefix, and
@@ -64,10 +64,10 @@
 #
 # Output: log lines on stderr; on stdout, the dry-run plan and these markers
 # (the last lines on stdout, always in this order):
-#   TAU_RETARGET_BACKUP_RESULT=retargeted|unchanged|dry-run|not-applicable
-#   TAU_RETARGET_BACKUP_ENDPOINT=<url>   (not with not-applicable)
-#   TAU_RETARGET_BACKUP_REGION=<region>  (not with not-applicable)
-#   TAU_RETARGET_BACKUP_BUCKET=<bucket>  (not with not-applicable)
+#   FICUS_RETARGET_BACKUP_RESULT=retargeted|unchanged|dry-run|not-applicable
+#   FICUS_RETARGET_BACKUP_ENDPOINT=<url>   (not with not-applicable)
+#   FICUS_RETARGET_BACKUP_REGION=<region>  (not with not-applicable)
+#   FICUS_RETARGET_BACKUP_BUCKET=<bucket>  (not with not-applicable)
 # Secret values (the S3 secret key, the passphrase) are never printed, in
 # logs, the plan, or error messages; the access key id is shown redacted.
 #
@@ -110,8 +110,8 @@ Options:
                       bare or single-quoted); must be mode 0600 (no group/
                       other access) and owned by the invoking user. Exactly
                       these keys, both required:
-                        TAU_BACKUP_S3_ACCESS_KEY
-                        TAU_BACKUP_S3_SECRET_KEY
+                        FICUS_BACKUP_S3_ACCESS_KEY
+                        FICUS_BACKUP_S3_SECRET_KEY
   --bucket NAME      the new bucket (S3 naming rules: 3-63 of a-z 0-9 . -)
   --endpoint URL     the new endpoint: https://host[:port], nothing else
   --region REGION    the new SigV4 region (default: the region currently
@@ -171,10 +171,13 @@ unset _flag _var
 
 # Result markers — see the header. Always the last lines on stdout.
 emit_result() { # RESULT
-  printf 'TAU_RETARGET_BACKUP_RESULT=%s\n' "$1"
+  printf 'FICUS_RETARGET_BACKUP_RESULT=%s\n' "$1"
   [[ $1 == not-applicable ]] && return 0
-  printf 'TAU_RETARGET_BACKUP_ENDPOINT=%s\nTAU_RETARGET_BACKUP_REGION=%s\nTAU_RETARGET_BACKUP_BUCKET=%s\n' \
-    "${ENDPOINT}" "${REGION}" "${BUCKET}"
+  # One printf per marker: a multi-marker format string hides the later names
+  # behind `\n` from every grep of this file (the Ficus rename's blind spot).
+  printf 'FICUS_RETARGET_BACKUP_ENDPOINT=%s\n' "${ENDPOINT}"
+  printf 'FICUS_RETARGET_BACKUP_REGION=%s\n' "${REGION}"
+  printf 'FICUS_RETARGET_BACKUP_BUCKET=%s\n' "${BUCKET}"
 }
 
 # ============================================================== validate
@@ -207,11 +210,11 @@ SECRETS_MODE=${SECRETS_MOG%% *}
   die "--secrets file '${SECRETS}' is mode ${SECRETS_MODE} — it must not be readable by group/other (chmod 600 it)"
 read_file_exact "${SECRETS}" SECRETS_RAW || die "could not read --secrets file '${SECRETS}'"
 sh_env_parse "${SECRETS_RAW}" "--secrets file" \
-  TAU_BACKUP_S3_ACCESS_KEY:NEW_ACCESS_KEY TAU_BACKUP_S3_SECRET_KEY:NEW_SECRET_KEY ||
+  FICUS_BACKUP_S3_ACCESS_KEY:NEW_ACCESS_KEY FICUS_BACKUP_S3_SECRET_KEY:NEW_SECRET_KEY ||
   die "--secrets file '${SECRETS}' is not in the expected format (see --help)"
 unset SECRETS_RAW
-[[ -n ${NEW_ACCESS_KEY} ]] || die "--secrets file '${SECRETS}' does not set TAU_BACKUP_S3_ACCESS_KEY"
-[[ -n ${NEW_SECRET_KEY} ]] || die "--secrets file '${SECRETS}' does not set TAU_BACKUP_S3_SECRET_KEY"
+[[ -n ${NEW_ACCESS_KEY} ]] || die "--secrets file '${SECRETS}' does not set FICUS_BACKUP_S3_ACCESS_KEY"
+[[ -n ${NEW_SECRET_KEY} ]] || die "--secrets file '${SECRETS}' does not set FICUS_BACKUP_S3_SECRET_KEY"
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
   yq_is_mikefarah || die "dry run needs mikefarah yq v4 on PATH to parse the config (brew install yq / see README)"
@@ -219,6 +222,13 @@ else
   ensure_yq
 fi
 cfg_load "${CONFIG}"
+
+# This script reads and writes FICUS_* names only (backup.env, tau-backup.sh).
+# A host whose settings were never renamed (still on a pre-Ficus Core) is
+# refused before any live file is read or written — the tenant upgrade
+# renames it first.
+SRC_DEST=$(cfg_source_dest) || die "could not read source.dest from ${CONFIG}"
+require_host_env_prefix FICUS "${SRC_DEST}/.env"
 
 # Captured first, never inside [[ … ]]: a die() in a command substitution only
 # ends that subshell, so `[[ $(cfg_bool …) != true ]]` would read an invalid
@@ -236,40 +246,11 @@ TEMPLATE="${SCRIPT_DIR}/tau-backup.sh.tmpl"
 
 # The live tau-backup.sh: the non-S3 values it was rendered with are carried
 # over verbatim (re-deriving them would need setup-host.sh's whole config,
-# secrets included). Each is a `NAME='value'` line near the top, as the
-# template writes them.
+# secrets included) — lib.sh's backup_script_read_values, shared with the
+# env rename's re-render.
 [[ -f ${BACKUP_SCRIPT_PATH} ]] ||
   die "${BACKUP_SCRIPT_PATH} not found, but backup.enabled is true — setup-host.sh's phase_backup never completed on this host; re-run it rather than retargeting"
-read_file_exact "${BACKUP_SCRIPT_PATH}" LIVE_SCRIPT || die "could not read ${BACKUP_SCRIPT_PATH}"
-LIVE_TOKENS='DEST HOME_DIR DB_MODE DB_CONTAINER S3_ENDPOINT S3_REGION S3_BUCKET S3_PREFIX BACKUP_ENV_FILE'
-_found=' '
-_rest=${LIVE_SCRIPT}
-while [[ -n ${_rest} ]]; do
-  _line=${_rest%%$'\n'*}
-  if [[ ${_line} == "${_rest}" ]]; then _rest=''; else _rest=${_rest#*$'\n'}; fi
-  if [[ ${_line} =~ ^([A-Z][A-Z0-9_]*)=\'([^\']*)\'$ ]] && [[ " ${LIVE_TOKENS} " == *" ${BASH_REMATCH[1]} "* ]] &&
-    [[ ${_found} != *" ${BASH_REMATCH[1]} "* ]]; then
-    printf -v "LIVE_${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
-    _found+="${BASH_REMATCH[1]} "
-  fi
-done
-for _tok in ${LIVE_TOKENS}; do
-  [[ ${_found} == *" ${_tok} "* ]] ||
-    die "${BACKUP_SCRIPT_PATH} has no ${_tok}='…' line — it was not rendered from a tau-backup.sh.tmpl this script understands; re-run setup-host.sh's phase_backup instead"
-done
-unset _found _rest _line _tok
-for _tok in DEST HOME_DIR DB_MODE S3_PREFIX BACKUP_ENV_FILE; do
-  _val="LIVE_${_tok}"
-  [[ -n ${!_val} ]] || die "${BACKUP_SCRIPT_PATH} has an empty ${_tok} — refusing to re-render it"
-done
-# Carried-over values go through the same sed program; refuse any it would
-# corrupt (the original render could not have produced one, so this means
-# the file was edited by hand).
-for _tok in DEST HOME_DIR DB_MODE DB_CONTAINER S3_PREFIX BACKUP_ENV_FILE; do
-  _val="LIVE_${_tok}"
-  [[ ${!_val} != *[\|\&\\]* ]] || die "${BACKUP_SCRIPT_PATH}'s ${_tok} contains '|', '&' or '\\' — refusing to re-render it"
-done
-unset _tok _val
+backup_script_read_values "${BACKUP_SCRIPT_PATH}"
 [[ ${LIVE_BACKUP_ENV_FILE} == "${BACKUP_ENV_TARGET}" ]] ||
   die "${BACKUP_SCRIPT_PATH} reads its secrets from ${LIVE_BACKUP_ENV_FILE}, not ${BACKUP_ENV_TARGET} — refusing to write a file it does not read"
 
@@ -287,10 +268,10 @@ YAML_PREFIX=$(cfg_get '.backup.s3_prefix' '') || die "could not read backup.s3_p
   die "${BACKUP_ENV_TARGET} not found, but backup.enabled is true — setup-host.sh's phase_backup never completed on this host; re-run it rather than retargeting"
 read_file_exact "${BACKUP_ENV_TARGET}" LIVE_ENV || die "could not read ${BACKUP_ENV_TARGET}"
 sh_env_parse "${LIVE_ENV}" "${BACKUP_ENV_TARGET}" \
-  TAU_BACKUP_S3_ACCESS_KEY:LIVE_ACCESS_KEY TAU_BACKUP_S3_SECRET_KEY:LIVE_SECRET_KEY TAU_BACKUP_PASSPHRASE:PASSPHRASE ||
+  FICUS_BACKUP_S3_ACCESS_KEY:LIVE_ACCESS_KEY FICUS_BACKUP_S3_SECRET_KEY:LIVE_SECRET_KEY FICUS_BACKUP_PASSPHRASE:PASSPHRASE ||
   die "${BACKUP_ENV_TARGET} is not in the format setup-host.sh writes — refusing to re-render it (and lose whatever it holds)"
 [[ -n ${PASSPHRASE} ]] ||
-  die "${BACKUP_ENV_TARGET} has no TAU_BACKUP_PASSPHRASE — refusing to retarget a backup whose encryption passphrase is unknown"
+  die "${BACKUP_ENV_TARGET} has no FICUS_BACKUP_PASSPHRASE — refusing to retarget a backup whose encryption passphrase is unknown"
 
 # Both replacements, rendered in memory. The sentinel keeps command
 # substitution from dropping the render's trailing newline(s), so the bytes
@@ -313,7 +294,7 @@ NEW_ENV=${NEW_ENV%x}
 # Self-check, independent of the renderer: the new file must read back as the
 # new key and the UNCHANGED passphrase.
 sh_env_parse "${NEW_ENV}" "rendered ${BACKUP_ENV_TARGET}" \
-  TAU_BACKUP_S3_ACCESS_KEY:CHECK_ACCESS_KEY TAU_BACKUP_S3_SECRET_KEY:CHECK_SECRET_KEY TAU_BACKUP_PASSPHRASE:CHECK_PASSPHRASE ||
+  FICUS_BACKUP_S3_ACCESS_KEY:CHECK_ACCESS_KEY FICUS_BACKUP_S3_SECRET_KEY:CHECK_SECRET_KEY FICUS_BACKUP_PASSPHRASE:CHECK_PASSPHRASE ||
   die "the rendered ${BACKUP_ENV_TARGET} does not parse back"
 [[ ${CHECK_ACCESS_KEY} == "${NEW_ACCESS_KEY}" && ${CHECK_SECRET_KEY} == "${NEW_SECRET_KEY}" && ${CHECK_PASSPHRASE} == "${PASSPHRASE}" ]] ||
   die "the rendered ${BACKUP_ENV_TARGET} does not read back as the new key and the unchanged passphrase — refusing to install it"
@@ -346,15 +327,15 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
       <(printf '%s' "${LIVE_SCRIPT}") <(printf '%s' "${NEW_SCRIPT}") | sed 's/^/  | /' || true
   fi
   printf '\n%s — %s (mode/owner preserved; secrets redacted)\n' "${BACKUP_ENV_TARGET}" "$(changed_word "${ENV_CHANGED}")"
-  plan "TAU_BACKUP_S3_ACCESS_KEY=$(redact_secret "${NEW_ACCESS_KEY}")"
-  plan "TAU_BACKUP_S3_SECRET_KEY=<redacted>"
-  plan "TAU_BACKUP_PASSPHRASE=<unchanged, redacted>"
+  plan "FICUS_BACKUP_S3_ACCESS_KEY=$(redact_secret "${NEW_ACCESS_KEY}")"
+  plan "FICUS_BACKUP_S3_SECRET_KEY=<redacted>"
+  plan "FICUS_BACKUP_PASSPHRASE=<unchanged, redacted>"
   printf '\nyaml — %s — %s\n' "${CONFIG}" "$(changed_word "${YAML_CHANGED}")"
   plan "backup.s3_endpoint: ${ENDPOINT} (was ${YAML_ENDPOINT:-<unset>})"
   plan "backup.s3_region: ${REGION} (was ${YAML_REGION:-<unset>})"
   plan "backup.s3_bucket: ${BUCKET} (was ${YAML_BUCKET:-<unset>})"
   printf '\nuntouched\n'
-  plan "tau-backup.timer / tau-backup.service (schedule), TAU_BACKUP_PASSPHRASE, backup.s3_prefix, backup credential env names, every bucket object"
+  plan "tau-backup.timer / tau-backup.service (schedule), FICUS_BACKUP_PASSPHRASE, backup.s3_prefix, backup credential env names, every bucket object"
   emit_result dry-run
   exit 0
 fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# seed.sh — seed a freshly-installed tau instance via the TAU_PASSWORD
+# seed.sh — seed a freshly-installed tau instance via the FICUS_PASSWORD
 # bootstrap bearer (fully privileged until the first admin passkey exists):
 #
 #   1. AI provider account   POST /api/provider-auth/<provider>/accounts
@@ -29,18 +29,18 @@ Usage: seed.sh --config tau-setup.yaml [options]
 
 Seeds an exe SSH key secret, and — only when explicitly configured — an AI
 provider account and/or a starter squad + agent, on a running tau instance,
-using the TAU_PASSWORD bootstrap bearer. A config with no ai.model and no
+using the FICUS_PASSWORD bootstrap bearer. A config with no ai.model and no
 squad.name skips both cleanly (the in-app onboarding checklist is the path
 instead).
 
 Options:
   --config FILE     tau-setup.yaml (required; see tau-setup.example.yaml)
-  --env-file FILE   .env holding TAU_PASSWORD (default: <source.dest>/.env)
+  --env-file FILE   .env holding FICUS_PASSWORD (default: <source.dest>/.env)
   --api-url URL     API base URL (default: http://127.0.0.1:<core.port>)
   --dry-run         print what would be seeded, without calling the API
   -h, --help        show this help
 
-Secrets: the bearer comes from $TAU_PASSWORD or the env file; the AI key from
+Secrets: the bearer comes from $FICUS_PASSWORD or the env file; the AI key from
 the env var named by ai.key_env in the config (prompted on a TTY if unset).
 EOF
 }
@@ -138,7 +138,7 @@ fi
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
   log_step "seed plan (dry run — no API calls)"
-  plan "API:            ${API_URL} (bearer from \$TAU_PASSWORD or ${ENV_FILE})"
+  plan "API:            ${API_URL} (bearer from \$FICUS_PASSWORD or ${ENV_FILE})"
   if [[ ${AI_SECTION_PRESENT} -eq 0 ]]; then
     plan "provider:       no ai.model in config — SKIP (self-hosters opt in with ai.model; onboarding collects a provider key in-app instead)"
   elif [[ ${AI_PROVIDER} == openai-codex ]]; then
@@ -166,13 +166,16 @@ fi
 
 # ---------------------------------------------------------------- bearer
 
-TAU_API_BASE=${API_URL}
-TAU_BEARER=${TAU_PASSWORD:-}
-if [[ -z ${TAU_BEARER} ]]; then
-  TAU_BEARER=$(envfile_get "${ENV_FILE}" 'TAU_PASSWORD') ||
-    die "no bearer: set \$TAU_PASSWORD or provide --env-file with TAU_PASSWORD (looked in ${ENV_FILE})"
+FICUS_API_BASE=${API_URL}
+# Either spelling (one release; the env file may predate the Ficus rename).
+# Read in this shell, not in `$(...)`: a FICUS_/TAU_ password conflict in the
+# file must stop the run, not read as "absent".
+FICUS_BEARER=${FICUS_PASSWORD:-${TAU_PASSWORD:-}}
+if [[ -z ${FICUS_BEARER} ]]; then
+  envfile_read_prefixed FICUS_BEARER "${ENV_FILE}" PASSWORD ||
+    die "no bearer: set \$FICUS_PASSWORD or provide --env-file with FICUS_PASSWORD (looked in ${ENV_FILE})"
 fi
-[[ -n ${TAU_BEARER} ]] || die "TAU_PASSWORD is empty — cannot authenticate seeding requests"
+[[ -n ${FICUS_BEARER} ]] || die "FICUS_PASSWORD is empty — cannot authenticate seeding requests"
 
 retry_until 30 2 "API up at ${API_URL}" api_is_up "${API_URL}" ||
   die "tau API is not reachable at ${API_URL}"

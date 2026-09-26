@@ -267,6 +267,29 @@ jobs:
           }
           if (( status != 0 )); then exit $(( status )); fi
 
+      # The Ficus env rename (TAU_* -> FICUS_*) end to end: upgrade-host.sh,
+      # apply-artifacts.sh and setup-host.sh run as root against a fake host
+      # (every path through the toolkit's seams; systemctl, journalctl,
+      # swapon, sleep and the health probe are PATH shims) — the rename, the
+      # rollback restore, SIGTERM/SIGHUP/SIGKILL, the reconcile and the
+      # refusals. It needs real root and a systemd Ubuntu host, so the same
+      # summary-line + positive-marker gating as the suites above.
+      - name: Run env-prefix upgrade suite (root)
+        run: |
+          set -o pipefail
+          status=0
+          out=$(sudo env "PATH=$PATH" bash scripts/setup/env-prefix-upgrade.test.sh 2>&1) || status=$?
+          printf '%s\n' "${out}"
+          tail -n 1 <<<"${out}" | grep -Eq '^[0-9]+ passed, 0 failed$' || {
+            echo '::error::env-prefix-upgrade.test.sh (root) ended without a clean "N passed, 0 failed" summary.'
+            exit 1
+          }
+          grep -Fq 'FICUS env-prefix upgrade section: ENABLED' <<<"${out}" || {
+            echo '::error::env-prefix-upgrade.test.sh (root) skipped itself (no "FICUS env-prefix upgrade section: ENABLED" marker) — this step exists to execute it.'
+            exit 1
+          }
+          if (( status != 0 )); then exit $(( status )); fi
+
       # Cache downloaded packages only. Installed module trees are worktree/layout-specific.
       - name: Verify deterministic Pi patch regeneration has no drift
         run: |

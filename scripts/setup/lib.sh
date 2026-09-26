@@ -22,20 +22,23 @@ fi
 
 _ts() { date '+%H:%M:%S'; }
 
-log_info() { printf '%s %sinfo%s  %s\n' "$(_ts)" "$_C_INFO" "$_C_OFF" "$*" >&2; }
-log_warn() { printf '%s %swarn%s  %s\n' "$(_ts)" "$_C_WARN" "$_C_OFF" "$*" >&2; }
-log_error() { printf '%s %serror%s %s\n' "$(_ts)" "$_C_ERR" "$_C_OFF" "$*" >&2; }
-log_step() { printf '\n%s %s==>%s %s\n' "$(_ts)" "$_C_STEP" "$_C_OFF" "$*" >&2; }
+# A log write never fails the caller: when the reader of stderr is gone (a
+# dropped SSH session), the env rename's restore and reconcile must still run
+# to the end rather than die on the log line before them.
+log_info() { printf '%s %sinfo%s  %s\n' "$(_ts)" "$_C_INFO" "$_C_OFF" "$*" >&2 || true; }
+log_warn() { printf '%s %swarn%s  %s\n' "$(_ts)" "$_C_WARN" "$_C_OFF" "$*" >&2 || true; }
+log_error() { printf '%s %serror%s %s\n' "$(_ts)" "$_C_ERR" "$_C_OFF" "$*" >&2 || true; }
+log_step() { printf '\n%s %s==>%s %s\n' "$(_ts)" "$_C_STEP" "$_C_OFF" "$*" >&2 || true; }
 
 # Total number of phase_step call sites in setup-host.sh. Pinned by a test in
 # lib.test.sh so adding a phase without a marker fails CI rather than silently
 # freezing a customer's progress display.
-TAU_PHASE_TOTAL=13
+FICUS_PHASE_TOTAL=13
 _tau_phase_n=0
 
 # Announce a phase on two channels at once:
 #   - the human banner on stderr, exactly as log_step always printed it;
-#   - TAU_PHASE=<ordinal>/<total> <slug> on STDOUT, which is the only stream
+#   - FICUS_PHASE=<ordinal>/<total> <slug> on STDOUT, which is the only stream
 #     run-toolkit.ts scans (pump(proc.stdout, true), stderr false).
 #
 # The slug is the contract; the ordinal is diagnostics. The control plane maps
@@ -45,7 +48,7 @@ phase_step() { # SLUG HUMAN_TEXT...
   local slug=$1
   shift
   _tau_phase_n=$((_tau_phase_n + 1))
-  printf 'TAU_PHASE=%s/%s %s\n' "${_tau_phase_n}" "${TAU_PHASE_TOTAL}" "${slug}"
+  printf 'FICUS_PHASE=%s/%s %s\n' "${_tau_phase_n}" "${FICUS_PHASE_TOTAL}" "${slug}"
   log_step "$@"
 }
 # Dry-run plan lines go to stdout so they can be captured/reviewed.
@@ -80,7 +83,7 @@ require_cmd() { # NAME [INSTALL_HINT]
 # attach screenshots with it, so anywhere an agent runs gh, this is the floor.
 # Kept beside the sandbox images' own pin (packages/k8s-sandbox/Dockerfile,
 # apps/core/docker-sandbox/Dockerfile) — bump all three together.
-TAU_MIN_GH_VERSION='2.99.0'
+FICUS_MIN_GH_VERSION='2.99.0'
 
 # Print a command's semver, or nothing when it cannot be parsed.
 # `gh --version` prints "gh version 2.99.0 (2026-...)"; the sed keeps the digits.
@@ -114,13 +117,13 @@ version_at_least() { # INSTALLED MINIMUM
 check_host_runtime_gh() { # SANDBOX_RUNTIME
   [ "$1" = host ] || return 0
   if ! have gh; then
-    log_warn "gh is not installed. Under the 'host' sandbox runtime agents use this machine's gh, and agent prompts tell them to attach screenshots with 'gh --attach' (needs ${TAU_MIN_GH_VERSION}+). Install gh to enable it."
+    log_warn "gh is not installed. Under the 'host' sandbox runtime agents use this machine's gh, and agent prompts tell them to attach screenshots with 'gh --attach' (needs ${FICUS_MIN_GH_VERSION}+). Install gh to enable it."
     return 0
   fi
   local v
   v=$(cmd_semver gh)
-  if ! version_at_least "${v}" "${TAU_MIN_GH_VERSION}"; then
-    log_warn "gh ${v:-(unknown version)} is older than ${TAU_MIN_GH_VERSION}. Under the 'host' sandbox runtime agents use this machine's gh, and 'gh --attach' — which agent prompts tell them to use — will fail until it is upgraded."
+  if ! version_at_least "${v}" "${FICUS_MIN_GH_VERSION}"; then
+    log_warn "gh ${v:-(unknown version)} is older than ${FICUS_MIN_GH_VERSION}. Under the 'host' sandbox runtime agents use this machine's gh, and 'gh --attach' — which agent prompts tell them to use — will fail until it is upgraded."
   fi
 }
 
@@ -207,7 +210,7 @@ managed_user_home() { # RUN_USER
 
 ensure_system_bun_node() { # RUN_USER SOURCE_BUN
   local run_user=$1 source_bun=$2
-  local system_bin=${TAU_SYSTEM_BIN_DIR:-/usr/local/bin}
+  local system_bin=${FICUS_SYSTEM_BIN_DIR:-${TAU_SYSTEM_BIN_DIR:-/usr/local/bin}}
   local system_bun="${system_bin}/bun" system_node="${system_bin}/node"
   local run_home smoke output
 
@@ -298,7 +301,12 @@ install_rendered() { # [--check-placeholders] MODE OWNER GROUP DEST RENDER_CMD [
     rm -f "${tmp}"
     die "refusing to install ${dest}: rendered content still contains unsubstituted @PLACEHOLDER@ markers (offending lines above)"
   fi
-  as_root install -m "${mode}" -o "${owner}" -g "${group}" "${tmp}" "${dest}"
+  # Checked, not left to errexit: the env-rename restore renders units from
+  # inside an `if !` span, where a failed install would otherwise pass.
+  if ! as_root install -m "${mode}" -o "${owner}" -g "${group}" "${tmp}" "${dest}"; then
+    rm -f "${tmp}"
+    die "refusing to continue: installing ${dest} failed"
+  fi
   rm -f "${tmp}"
 }
 
@@ -343,18 +351,18 @@ is_stdout_tty() { [[ -t 1 ]]; }
 # journal, `ssh host ... > out.log`, CI artifacts, a wrapper script's log
 # file, ...) would otherwise permanently leak a fully-privileged bootstrap
 # credential into a captured log. The not-generated case (an existing
-# TAU_PASSWORD, from env or a prior run's .env) already never printed the
+# FICUS_PASSWORD, from env or a prior run's .env) already never printed the
 # value itself, so it's unaffected either way. `is_stdout_tty` is called
 # indirectly (not inlined as `[[ -t 1 ]]`) so lib.test.sh can override it the
 # same way it already overrides `is_tty` for resolve_exe_key_path.
-render_bootstrap_token_block() { # PW_GENERATED TAU_PW_VALUE PW_SOURCE ENV_FILE
+render_bootstrap_token_block() { # PW_GENERATED FICUS_PW_VALUE PW_SOURCE ENV_FILE
   local generated=$1 value=$2 source=$3 env_file=$4
   if [[ ${generated} -eq 1 ]]; then
     if is_stdout_tty; then
       printf '   %s\n' "${value}"
       printf '   (printed once — also stored in %s)\n' "${env_file}"
     else
-      printf '   Bootstrap token withheld (non-interactive run); read TAU_PASSWORD from %s if needed.\n' "${env_file}"
+      printf '   Bootstrap token withheld (non-interactive run); read FICUS_PASSWORD from %s if needed.\n' "${env_file}"
     fi
   else
     printf '   from %s (not re-printed)\n' "${source}"
@@ -374,13 +382,13 @@ prompt_value() { # PROMPT VAR_NAME [silent]
 }
 
 # The complete, closed set of sandbox runtimes — the SAME five the core's
-# TAU_SANDBOX_RUNTIME accepts (apps/core/src/services/sandbox/runtime.ts).
-TAU_SANDBOX_RUNTIMES='docker-sysbox, docker-socket, k8s, vm, host'
+# FICUS_SANDBOX_RUNTIME accepts (apps/core/src/services/sandbox/runtime.ts).
+FICUS_SANDBOX_RUNTIMES='docker-sysbox, docker-socket, k8s, vm, host'
 
 # Validate a runtime.sandbox value, or die naming every supported one.
 #
 # There is no default and no auto-detection anywhere in the stack: the core
-# refuses to start without TAU_SANDBOX_RUNTIME, so a config that never chose a
+# refuses to start without FICUS_SANDBOX_RUNTIME, so a config that never chose a
 # runtime must fail on the control machine rather than install a runtime nobody
 # picked and surface as a host that boots and cannot run a single agent. The
 # retired spellings get their rename hint instead of a bare rejection — they
@@ -405,18 +413,19 @@ require_sandbox_runtime() { # VALUE
   # the second line of defence, not the only one.
   value=$(trim_ws "${1:-}")
   [[ -n ${value} ]] ||
-    die "config: runtime.sandbox is required — one of ${TAU_SANDBOX_RUNTIMES} (see docs/wiki/sandbox-runtimes.md)"
+    die "config: runtime.sandbox is required — one of ${FICUS_SANDBOX_RUNTIMES} (see docs/wiki/sandbox-runtimes.md)"
   case "${value}" in
     docker-sysbox | docker-socket | k8s | vm | host) return 0 ;;
     sysbox) hint=' — use docker-sysbox' ;;
     socket) hint=' — use docker-socket' ;;
     auto | docker) hint=' — auto-detection was removed, choose docker-sysbox or docker-socket' ;;
   esac
-  die "config: runtime.sandbox must be one of ${TAU_SANDBOX_RUNTIMES} (got '${value}')${hint}"
+  die "config: runtime.sandbox must be one of ${FICUS_SANDBOX_RUNTIMES} (got '${value}')${hint}"
 }
 
 # Refuse to restart tau-api/tau-worker against an env file that does not name a
-# supported TAU_SANDBOX_RUNTIME.
+# supported FICUS_SANDBOX_RUNTIME (or, on a host an upgrade is about to rename,
+# its TAU_ spelling — envfile_read_prefixed reads either).
 #
 # An upgrade deliberately rewrites no .env — that is what makes it runnable long
 # after provisioning without re-supplying a single secret. But the runtime is
@@ -432,8 +441,13 @@ require_sandbox_runtime() { # VALUE
 require_env_file_sandbox_runtime() { # ENV_FILE
   local file=$1 value='' hint=''
   [[ -f ${file} ]] ||
-    die "TAU_SANDBOX_RUNTIME preflight: env file '${file}' not found — the services read it at startup, so an upgrade cannot verify what they would come back as"
-  value=$(envfile_get "${file}" TAU_SANDBOX_RUNTIME || true)
+    die "FICUS_SANDBOX_RUNTIME preflight: env file '${file}' not found — the services read it at startup, so an upgrade cannot verify what they would come back as"
+  # A non-root (sudo) run that cannot read it cannot check anything in it —
+  # this, or whether it still uses TAU_ names a Ficus release needs renamed
+  # (Ruling 31: fail closed). Name the file, never its contents.
+  [[ -r ${file} ]] ||
+    die "cannot read ${file} as $(id -un) (uid ${EUID}), so this non-root run cannot check it (its sandbox runtime, or TAU_ names the Ficus Core release needs renamed — the rename is root-only) — re-run this as root"
+  envfile_read_prefixed value "${file}" SANDBOX_RUNTIME || value=''
   # Tolerate `KEY="value"` / `KEY='value'` and stray whitespace: systemd's
   # EnvironmentFile strips the quotes, so those are the same setting.
   value=${value#[\"\']}
@@ -441,14 +455,14 @@ require_env_file_sandbox_runtime() { # ENV_FILE
   value=${value#"${value%%[![:space:]]*}"}
   value=${value%"${value##*[![:space:]]}"}
   [[ -n ${value} ]] ||
-    die "TAU_SANDBOX_RUNTIME is not set in ${file} — tau-api and tau-worker refuse to start without it, so restarting them now would take this instance DOWN. Add one of ${TAU_SANDBOX_RUNTIMES} to that file (see docs/wiki/sandbox-runtimes.md) and re-run."
+    die "FICUS_SANDBOX_RUNTIME is not set in ${file} — tau-api and tau-worker refuse to start without it, so restarting them now would take this instance DOWN. Add one of ${FICUS_SANDBOX_RUNTIMES} to that file (see docs/wiki/sandbox-runtimes.md) and re-run."
   case "${value}" in
     docker-sysbox | docker-socket | k8s | vm | host) return 0 ;;
     sysbox) hint=' — this host predates the rename: use docker-sysbox' ;;
     socket) hint=' — this host predates the rename: use docker-socket' ;;
     auto | docker) hint=' — auto-detection was removed, choose docker-sysbox or docker-socket' ;;
   esac
-  die "TAU_SANDBOX_RUNTIME in ${file} must be one of ${TAU_SANDBOX_RUNTIMES} (got '${value}')${hint}. tau-api and tau-worker refuse to start otherwise, so restarting them now would take this instance DOWN; fix that file and re-run."
+  die "FICUS_SANDBOX_RUNTIME in ${file} must be one of ${FICUS_SANDBOX_RUNTIMES} (got '${value}')${hint}. tau-api and tau-worker refuse to start otherwise, so restarting them now would take this instance DOWN; fix that file and re-run."
 }
 
 # Resolve runtime.exe.ssh_key_path for `runtime.sandbox: vm`, tolerating an
@@ -547,6 +561,13 @@ cfg_has() { # .dotted.path
   [[ ${val} != "${sentinel}" ]]
 }
 
+# The install root: .source.dest, tilde-expanded, with the toolkit's default —
+# the one resolution every entrypoint uses (and the control plane's probes
+# mirror).
+cfg_source_dest() {
+  expand_tilde "$(cfg_get '.source.dest' '/opt/tau-core')"
+}
+
 cfg_require() { # .dotted.path DESCRIPTION
   local val
   val=$(cfg_get "$1")
@@ -575,7 +596,7 @@ cfg_bool() { # .dotted.path DEFAULT(true|false)
 # as a normal yq assignment.
 cfg_set() { # .dotted.path VALUE
   local path=$1
-  TAU_CFG_SET_VALUE=$2 yq -i "${path} = strenv(TAU_CFG_SET_VALUE)" "${CFG_FILE}" ||
+  FICUS_CFG_SET_VALUE=$2 yq -i "${path} = strenv(FICUS_CFG_SET_VALUE)" "${CFG_FILE}" ||
     die "failed to write ${path} to ${CFG_FILE}"
 }
 
@@ -1132,8 +1153,8 @@ install_origin_cert() { # CERT_SRC KEY_SRC [CERT_DEST KEY_DEST]
 # mismatch is not a degradation but a total connection failure, because
 # verify-full has no fallback to fall back to. That is the point: `require`
 # would happily connect to an impostor.
-TAU_DB_CA_DIR='/etc/tau'
-TAU_DB_CA_PATH="${TAU_DB_CA_DIR}/database-ca.crt"
+FICUS_DB_CA_DIR='/etc/tau'
+FICUS_DB_CA_PATH="${FICUS_DB_CA_DIR}/database-ca.crt"
 
 # Install the supplied database CA to the canonical path above.
 #
@@ -1145,9 +1166,9 @@ TAU_DB_CA_PATH="${TAU_DB_CA_DIR}/database-ca.crt"
 install_database_ca() { # CA_SRC
   local ca=$1
   [[ -f ${ca} ]] || die "database.ca_path: CA certificate not found: ${ca}"
-  as_root install -d -m 0755 -o root -g root "${TAU_DB_CA_DIR}"
-  as_root install -m 0644 -o root -g root "${ca}" "${TAU_DB_CA_PATH}"
-  log_info "installed database CA ${TAU_DB_CA_PATH} (0644)"
+  as_root install -d -m 0755 -o root -g root "${FICUS_DB_CA_DIR}"
+  as_root install -m 0644 -o root -g root "${ca}" "${FICUS_DB_CA_PATH}"
+  log_info "installed database CA ${FICUS_DB_CA_PATH} (0644)"
 }
 
 # ------------------------------------------------------ managed artifacts
@@ -1163,11 +1184,11 @@ install_database_ca() { # CA_SRC
 #   <stage>/files/<target>   -> /etc/tau/artifacts/<target>        [file artifacts]
 #   <stage>/manifest          "<mode> <target>" per file artifact
 #
-# TAU_MANAGED_ENV_PATH is half of a two-sided contract: the OTHER half is the
+# FICUS_MANAGED_ENV_PATH is half of a two-sided contract: the OTHER half is the
 # `EnvironmentFile=-/etc/tau/managed.env` line in systemd/tau-api.service.tmpl
 # and tau-worker.service.tmpl. Change one and you must change the other.
 #
-# TAU_ARTIFACTS_DIR is EXCLUSIVELY artifact-managed: nothing but these install
+# FICUS_ARTIFACTS_DIR is EXCLUSIVELY artifact-managed: nothing but these install
 # functions ever writes into it. Everything else the toolkit places lives
 # elsewhere — the database CA at /etc/tau/database-ca.crt, managed.env at
 # /etc/tau/managed.env (both SIBLINGS of this dir, never inside it), Caddy TLS
@@ -1175,10 +1196,19 @@ install_database_ca() { # CA_SRC
 # exclusivity is what makes prune_artifacts safe: any file in this dir that
 # the current manifest doesn't list can only be a leftover of a DELETED
 # artifact, so removing it is reconciliation, not collateral damage.
-TAU_ARTIFACTS_DIR='/etc/tau/artifacts'
-TAU_MANAGED_ENV_PATH='/etc/tau/managed.env'
+#
+# These three are also seams (lib.test.sh points them at scratch dirs). Until
+# phase 5 either spelling may be set BEFORE sourcing this file — the control
+# plane's own scripts still set the TAU_ one — and the TAU_ name stays an
+# alias of the same value. A caller that overrides one AFTER sourcing must
+# use the FICUS_ name: that is the one every function here reads.
+FICUS_ARTIFACTS_DIR=${FICUS_ARTIFACTS_DIR:-${TAU_ARTIFACTS_DIR:-/etc/tau/artifacts}}
+FICUS_MANAGED_ENV_PATH=${FICUS_MANAGED_ENV_PATH:-${TAU_MANAGED_ENV_PATH:-/etc/tau/managed.env}}
 # Where the tau-api/tau-worker units live (overridden in lib.test.sh).
-TAU_SYSTEMD_UNIT_DIR='/etc/systemd/system'
+FICUS_SYSTEMD_UNIT_DIR=${FICUS_SYSTEMD_UNIT_DIR:-${TAU_SYSTEMD_UNIT_DIR:-/etc/systemd/system}}
+TAU_ARTIFACTS_DIR=${FICUS_ARTIFACTS_DIR}
+TAU_MANAGED_ENV_PATH=${FICUS_MANAGED_ENV_PATH}
+TAU_SYSTEMD_UNIT_DIR=${FICUS_SYSTEMD_UNIT_DIR}
 
 # Install the staged managed.env (all platform-managed env credentials) to the
 # canonical path the units reference. 0600 root — it holds live credentials.
@@ -1189,12 +1219,12 @@ install_managed_env() { # STAGE_DIR
   local stage=$1
   local src="${stage}/managed.env"
   [[ -f ${src} ]] || return 0
-  as_root install -d -m 0755 -o root -g root "$(dirname "${TAU_MANAGED_ENV_PATH}")"
-  install_rendered 0600 root root "${TAU_MANAGED_ENV_PATH}" cat "${src}"
-  log_info "installed ${TAU_MANAGED_ENV_PATH} (0600)"
+  as_root install -d -m 0755 -o root -g root "$(dirname "${FICUS_MANAGED_ENV_PATH}")"
+  install_rendered 0600 root root "${FICUS_MANAGED_ENV_PATH}" cat "${src}"
+  log_info "installed ${FICUS_MANAGED_ENV_PATH} (0600)"
 }
 
-# Install staged artifact FILES to TAU_ARTIFACTS_DIR, each with the mode
+# Install staged artifact FILES to FICUS_ARTIFACTS_DIR, each with the mode
 # recorded in the staging manifest. No-op when there is no manifest. File-kind
 # artifacts (e.g. APNs certificates) are read per-use by the app, so installing
 # or updating one does NOT restart any service — only a managed.env change
@@ -1203,7 +1233,7 @@ install_artifacts() { # STAGE_DIR
   local stage=$1
   local manifest="${stage}/manifest"
   [[ -f ${manifest} ]] || return 0
-  as_root install -d -m 0755 -o root -g root "${TAU_ARTIFACTS_DIR}"
+  as_root install -d -m 0755 -o root -g root "${FICUS_ARTIFACTS_DIR}"
   local mode target src
   while read -r mode target; do
     [[ -n ${mode} && -n ${target} ]] || continue
@@ -1215,8 +1245,8 @@ install_artifacts() { # STAGE_DIR
     [[ ${mode} =~ ^0[0-7]{3}$ ]] || die "install_artifacts: invalid mode '${mode}' for '${target}'"
     src="${stage}/files/${target}"
     [[ -f ${src} ]] || die "install_artifacts: staged file missing for '${target}': ${src}"
-    install_rendered "${mode}" root root "${TAU_ARTIFACTS_DIR}/${target}" cat "${src}"
-    log_info "installed ${TAU_ARTIFACTS_DIR}/${target} (${mode})"
+    install_rendered "${mode}" root root "${FICUS_ARTIFACTS_DIR}/${target}" cat "${src}"
+    log_info "installed ${FICUS_ARTIFACTS_DIR}/${target} (${mode})"
   done <"${manifest}"
 }
 
@@ -1243,30 +1273,30 @@ managed_env_would_change() { # STAGE_DIR
     echo 0
     return 0
   fi
-  if [[ -f ${TAU_MANAGED_ENV_PATH} ]]; then
-    if cmp -s "${src}" "${TAU_MANAGED_ENV_PATH}"; then echo 0; else echo 1; fi
+  if [[ -f ${FICUS_MANAGED_ENV_PATH} ]]; then
+    if cmp -s "${src}" "${FICUS_MANAGED_ENV_PATH}"; then echo 0; else echo 1; fi
   else
     # KEY=VALUE lines start with a non-#, non-blank character.
     if grep -q '^[^#[:space:]]' "${src}"; then echo 1; else echo 0; fi
   fi
 }
 
-# Remove every file under TAU_ARTIFACTS_DIR that the staging manifest does NOT
+# Remove every file under FICUS_ARTIFACTS_DIR that the staging manifest does NOT
 # list — the deletion half of reconciliation: an artifact deleted from the
 # platform registry vanishes from the manifest, and this sweeps its installed
-# file off the host. Constrained BY CONSTRUCTION to TAU_ARTIFACTS_DIR: names
+# file off the host. Constrained BY CONSTRUCTION to FICUS_ARTIFACTS_DIR: names
 # come from globbing that directory itself (basename only, no recursion), and
 # removal re-joins them onto the same fixed root — nothing outside the dir can
 # ever be touched. Safe because the dir is exclusively artifact-managed (see
-# the TAU_ARTIFACTS_DIR comment above). Fails safe twice over: no manifest
+# the FICUS_ARTIFACTS_DIR comment above). Fails safe twice over: no manifest
 # means "set unknown — prune nothing", and a missing dir means nothing to do.
 prune_artifacts() { # STAGE_DIR
   local stage=$1
   local manifest="${stage}/manifest"
   [[ -f ${manifest} ]] || return 0
-  [[ -d ${TAU_ARTIFACTS_DIR} ]] || return 0
+  [[ -d ${FICUS_ARTIFACTS_DIR} ]] || return 0
   local existing name mode target keep
-  for existing in "${TAU_ARTIFACTS_DIR}"/*; do
+  for existing in "${FICUS_ARTIFACTS_DIR}"/*; do
     [[ -e ${existing} || -L ${existing} ]] || continue # empty-dir glob literal
     name=$(basename -- "${existing}")
     keep=0
@@ -1275,8 +1305,8 @@ prune_artifacts() { # STAGE_DIR
       if [[ ${target} == "${name}" ]]; then keep=1; fi
     done <"${manifest}"
     if [[ ${keep} -eq 0 ]]; then
-      as_root rm -f -- "${TAU_ARTIFACTS_DIR}/${name}"
-      log_info "pruned ${TAU_ARTIFACTS_DIR}/${name} (no longer in the artifact manifest)"
+      as_root rm -f -- "${FICUS_ARTIFACTS_DIR}/${name}"
+      log_info "pruned ${FICUS_ARTIFACTS_DIR}/${name} (no longer in the artifact manifest)"
     fi
   done
 }
@@ -1303,8 +1333,8 @@ ensure_managed_env_dropins() {
   local unit unit_file dropin content
   content=$'[Service]\nEnvironmentFile=-/etc/tau/managed.env'
   for unit in tau-api tau-worker; do
-    unit_file="${TAU_SYSTEMD_UNIT_DIR}/${unit}.service"
-    dropin="${TAU_SYSTEMD_UNIT_DIR}/${unit}.service.d/managed-env.conf"
+    unit_file="${FICUS_SYSTEMD_UNIT_DIR}/${unit}.service"
+    dropin="${FICUS_SYSTEMD_UNIT_DIR}/${unit}.service.d/managed-env.conf"
     if [[ -f ${unit_file} ]] && grep -qF '/etc/tau/managed.env' "${unit_file}"; then
       continue # unit already loads managed.env inline
     fi
@@ -1363,17 +1393,46 @@ render_core_unit() { # TEMPLATE_FILE
     "$1"
 }
 
-# Render + install both core units. --check-placeholders is load-bearing: a
+# The unit templates name FICUS_ROOT. A release that predates the Ficus rename
+# reads TAU_ROOT instead, so its units are rendered through this filter
+# (stdin -> stdout): TAU turns every Environment=FICUS_… assignment into the
+# TAU_ spelling, FICUS passes the render through unchanged.
+core_unit_prefix_filter() { # PREFIX
+  case "$1" in
+    FICUS) cat ;;
+    TAU) sed -E 's/^Environment=("?)FICUS_/Environment=\1TAU_/' ;;
+    *)
+      log_error "core_unit_prefix_filter: prefix must be FICUS or TAU (got '$1')"
+      return 1
+      ;;
+  esac
+}
+
+# render_core_unit piped through core_unit_prefix_filter; pipefail in the
+# subshell so a failed render is a failed render whatever the caller set.
+render_core_unit_for_prefix() { # PREFIX TEMPLATE_FILE
+  (
+    set -o pipefail
+    render_core_unit "$2" | core_unit_prefix_filter "$1"
+  )
+}
+
+# Render + install both core units, in the env spelling PREFIX (default FICUS)
+# the release that will run them reads: the conversion branch, the pre-flip
+# hook and the env-restore of a converted host each pass the prefix of the
+# release they are rendering for, so a pre-rename release is never started
+# with a unit it cannot read. --check-placeholders is load-bearing: a
 # sed expression that matches nothing "succeeds", and a unit that reaches
 # systemd with a literal @RUN_ROOT@ in its WorkingDirectory simply refuses to
 # start. Does NOT daemon-reload — callers own that (and the restart) so a
 # reload happens exactly once per run.
-install_core_units() { # TEMPLATE_DIR
-  local template_dir=$1 unit
+install_core_units() { # TEMPLATE_DIR [PREFIX]
+  local template_dir=$1 prefix=${2:-FICUS} unit
+  _epr_is_prefix "${prefix}" || die "install_core_units: prefix must be FICUS or TAU (got '${prefix}')"
   for unit in tau-api tau-worker; do
     install_rendered --check-placeholders 0644 root root \
-      "${TAU_SYSTEMD_UNIT_DIR}/${unit}.service" \
-      render_core_unit "${template_dir}/${unit}.service.tmpl"
+      "${FICUS_SYSTEMD_UNIT_DIR}/${unit}.service" \
+      render_core_unit_for_prefix "${prefix}" "${template_dir}/${unit}.service.tmpl"
   done
 }
 
@@ -1394,11 +1453,11 @@ tau_api_memory_guardrail_content() {
 }
 
 # shellcheck disable=SC2034 # consumed by maintenance scripts and tests
-TAU_API_MEMORY_GUARDRAIL_CHANGED=0
+FICUS_API_MEMORY_GUARDRAIL_CHANGED=0
 ensure_tau_api_memory_guardrail() {
-  TAU_API_MEMORY_GUARDRAIL_CHANGED=0
-  local unit_file="${TAU_SYSTEMD_UNIT_DIR}/tau-api.service"
-  local dropin_dir="${TAU_SYSTEMD_UNIT_DIR}/tau-api.service.d"
+  FICUS_API_MEMORY_GUARDRAIL_CHANGED=0
+  local unit_file="${FICUS_SYSTEMD_UNIT_DIR}/tau-api.service"
+  local dropin_dir="${FICUS_SYSTEMD_UNIT_DIR}/tau-api.service.d"
   local content effective=0 candidate
   content=$(tau_api_memory_guardrail_content)
 
@@ -1448,9 +1507,9 @@ ensure_tau_api_memory_guardrail() {
       dropin="${dropin_dir}/${max_stem}.z-tau-memory-guardrail.conf"
     fi
   fi
-  as_root install -d -m 0755 -o root -g root "${dropin_dir}"
+  as_root install -d -m 0755 -o root -g root "${dropin_dir}" || die "could not create ${dropin_dir}"
   install_rendered 0644 root root "${dropin}" printf '%s\n' "${content}"
-  TAU_API_MEMORY_GUARDRAIL_CHANGED=1
+  FICUS_API_MEMORY_GUARDRAIL_CHANGED=1
   log_info "installed ${dropin} (made the canonical tau-api memory policy the effective final assignment)"
 }
 
@@ -1460,12 +1519,12 @@ ensure_tau_api_memory_guardrail() {
 # tau-backup.sh.tmpl) is an openssl-encrypted gzip tar whose top-level members
 # are, exactly: `db.dump` (a `pg_dump -Fc` custom-format dump), the HOME_DIR
 # tree (a single directory, e.g. `.tau/`), and the instance `.env` (which
-# carries TAU_ENCRYPTION_KEY). This decrypts + extracts one, asserting the
+# carries FICUS_ENCRYPTION_KEY). This decrypts + extracts one, asserting the
 # envelope shape, so setup-host.sh's phase_restore can pg_restore the dump,
 # lay down the workspace tree, and carry the encryption key forward.
 #
 # The passphrase is read from PASSFILE (a 0600 tmpfile the caller writes from
-# $TAU_SETUP_RESTORE_PASSPHRASE) and NEVER passed on argv — same discipline as
+# $FICUS_SETUP_RESTORE_PASSPHRASE) and NEVER passed on argv — same discipline as
 # tau-backup.sh.tmpl's own `-pass file:` encryption. The openssl parameters
 # here (aes-256-cbc + pbkdf2) mirror that template exactly; changing one side
 # without the other makes every existing backup undecryptable.
@@ -1686,7 +1745,7 @@ install_fstab_atomically() { # SOURCE FSTAB
 }
 
 ensure_swap_fstab_entry() { # PATH
-  local path=$1 fstab=${TAU_SWAP_FSTAB:-/etc/fstab}
+  local path=$1 fstab=${FICUS_SWAP_FSTAB:-${TAU_SWAP_FSTAB:-/etc/fstab}}
   local counts matching canonical temp
   counts=$(awk -v path="${path}" '
     $1 == path && $3 == "swap" { matching++ }
@@ -1815,9 +1874,9 @@ render_backup_env_content() { # MODE(real|redact) ACCESS_KEY SECRET_KEY PASSPHRA
 # encryption passphrase. 0600 root-owned; read by tau-backup.sh. Never log or
 # print these values in full. Values are single-quoted so this file sources
 # safely even if a secret contains spaces, \$(...), or backticks.
-TAU_BACKUP_S3_ACCESS_KEY=$(sh_single_quote "${access}")
-TAU_BACKUP_S3_SECRET_KEY=$(sh_single_quote "${secret}")
-TAU_BACKUP_PASSPHRASE=$(sh_single_quote "${passphrase}")
+FICUS_BACKUP_S3_ACCESS_KEY=$(sh_single_quote "${access}")
+FICUS_BACKUP_S3_SECRET_KEY=$(sh_single_quote "${secret}")
+FICUS_BACKUP_PASSPHRASE=$(sh_single_quote "${passphrase}")
 EOF
 }
 
@@ -1847,6 +1906,84 @@ render_backup_script_content() { # TEMPLATE DEST HOME_DIR DB_MODE DB_CONTAINER S
     -e "s|@S3_PREFIX@|${9}|g" \
     -e "s|@BACKUP_ENV_FILE@|${10}|g" \
     "$1"
+}
+
+# Read the values a live tau-backup.sh was rendered with — the `NAME='value'`
+# lines its template writes near the top — into LIVE_<NAME> for DEST HOME_DIR
+# DB_MODE DB_CONTAINER S3_ENDPOINT S3_REGION S3_BUCKET S3_PREFIX
+# BACKUP_ENV_FILE, and the script's exact bytes into LIVE_SCRIPT. Re-deriving
+# them would need setup-host.sh's whole config, secrets included, so both
+# retarget-backup.sh and the env rename carry them over from the installed
+# copy. Dies on a script this toolkit did not render (a missing or empty
+# required value, or one the render's sed program would corrupt).
+backup_script_read_values() { # SCRIPT
+  local script=$1 _found=' ' _rest _line _tok _val
+  local tokens='DEST HOME_DIR DB_MODE DB_CONTAINER S3_ENDPOINT S3_REGION S3_BUCKET S3_PREFIX BACKUP_ENV_FILE'
+  read_file_exact "${script}" LIVE_SCRIPT || die "could not read ${script}"
+  _rest=${LIVE_SCRIPT}
+  while [[ -n ${_rest} ]]; do
+    _line=${_rest%%$'\n'*}
+    if [[ ${_line} == "${_rest}" ]]; then _rest=''; else _rest=${_rest#*$'\n'}; fi
+    if [[ ${_line} =~ ^([A-Z][A-Z0-9_]*)=\'([^\']*)\'$ ]] && [[ " ${tokens} " == *" ${BASH_REMATCH[1]} "* ]] &&
+      [[ ${_found} != *" ${BASH_REMATCH[1]} "* ]]; then
+      printf -v "LIVE_${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
+      _found+="${BASH_REMATCH[1]} "
+    fi
+  done
+  for _tok in ${tokens}; do
+    [[ ${_found} == *" ${_tok} "* ]] ||
+      die "${script} has no ${_tok}='…' line — it was not rendered from a tau-backup.sh.tmpl this script understands; re-run setup-host.sh's phase_backup instead"
+  done
+  for _tok in DEST HOME_DIR DB_MODE S3_PREFIX BACKUP_ENV_FILE; do
+    _val="LIVE_${_tok}"
+    [[ -n ${!_val} ]] || die "${script} has an empty ${_tok} — refusing to re-render it"
+  done
+  # Carried-over values go through the same sed program; refuse any it would
+  # corrupt (the original render could not have produced one, so this means
+  # the file was edited by hand).
+  for _tok in DEST HOME_DIR DB_MODE DB_CONTAINER S3_PREFIX BACKUP_ENV_FILE; do
+    _val="LIVE_${_tok}"
+    [[ ${!_val} != *[\|\&\\]* ]] || die "${script}'s ${_tok} contains '|', '&' or '\\' — refusing to re-render it"
+  done
+}
+
+# Re-render the INSTALLED tau-backup.sh (BACKUP_SCRIPT_PATH) from TEMPLATE with
+# the values it already carries, and install it in place with the same mode
+# and owner (staged next to it, one rename). The env rename uses this when it
+# renames backup.env: an installed copy that predates the rename reads the
+# TAU_ backup names, the template reads FICUS_BACKUP_* and
+# FICUS_TERMINATION_BACKUP_EFFECT_ID. A no-op when nothing would change.
+backup_script_rerender() { # TEMPLATE
+  local template=$1 target new staged
+  [[ -f ${template} ]] ||
+    die "${template} not found — push tau-backup.sh.tmpl with the toolkit; ${BACKUP_SCRIPT_PATH} must be re-rendered alongside the backup.env rename"
+  _epr_resolve "${BACKUP_SCRIPT_PATH}" target || die "${BACKUP_SCRIPT_PATH} not found — nothing to re-render"
+  backup_script_read_values "${target}"
+  # retarget-backup.sh replaces these three with validated values; here they
+  # are carried over, so they get the same sed-safety check as the rest.
+  local _tok _val
+  for _tok in S3_ENDPOINT S3_REGION S3_BUCKET; do
+    _val="LIVE_${_tok}"
+    [[ ${!_val} != *[\|\&\\]* ]] || die "${target}'s ${_tok} contains '|', '&' or '\\' — refusing to re-render it"
+  done
+  if ! new=$(render_backup_script_content "${template}" \
+    "${LIVE_DEST}" "${LIVE_HOME_DIR}" "${LIVE_DB_MODE}" "${LIVE_DB_CONTAINER}" \
+    "${LIVE_S3_ENDPOINT}" "${LIVE_S3_REGION}" "${LIVE_S3_BUCKET}" "${LIVE_S3_PREFIX}" "${LIVE_BACKUP_ENV_FILE}" && printf x) ||
+    [[ ${new} != *x ]]; then
+    die "failed to render ${template}"
+  fi
+  new=${new%x}
+  [[ -n ${new} ]] || die "rendering ${template} produced nothing"
+  [[ ! ${new} =~ @[A-Z_]+@ ]] || die "rendering ${template} left an unsubstituted @PLACEHOLDER@ — refusing to install it"
+  if [[ ${new} == "${LIVE_SCRIPT}" ]]; then
+    return 0
+  fi
+  stage_file_replacement "${target}" "${new}" staged || die "could not stage the re-rendered ${target} — it was left unchanged"
+  if ! mv -f -- "${staged}" "${target}"; then
+    rm -f -- "${staged}"
+    die "could not install the re-rendered ${target} — it was left unchanged"
+  fi
+  log_info "re-rendered ${target} from ${template} (its target and paths unchanged)"
 }
 
 # Inverse of sh_single_quote, for reading back a file this toolkit (or the
@@ -1962,7 +2099,7 @@ s3_list_probe() { # ENDPOINT REGION BUCKET PREFIX ACCESS SECRET
 
 # ------------------------------------------------------------------ tau API
 
-# Callers set TAU_API_BASE (e.g. http://127.0.0.1:3000) and TAU_BEARER.
+# Callers set FICUS_API_BASE (e.g. http://127.0.0.1:3000) and FICUS_BEARER.
 API_STATUS=''
 API_BODY=''
 
@@ -1972,7 +2109,7 @@ API_BODY=''
 # and the request body arrives on stdin via --data-binary @-.
 _api_curl_auth_config() {
   # curl config quoted strings honor \\ and \" escapes — escape exactly those.
-  local b=${TAU_BEARER//\\/\\\\}
+  local b=${FICUS_BEARER//\\/\\\\}
   printf 'header = "Authorization: Bearer %s"\n' "${b//\"/\\\"}"
 }
 
@@ -1984,9 +2121,9 @@ api_request() { # METHOD PATH [JSON_BODY]
   if [[ -n ${body} ]]; then
     args+=(-H 'Content-Type: application/json' --data-binary @-)
     API_STATUS=$(printf '%s' "${body}" |
-      curl --config <(_api_curl_auth_config) "${args[@]}" "${TAU_API_BASE}${path}") || rc=$?
+      curl --config <(_api_curl_auth_config) "${args[@]}" "${FICUS_API_BASE}${path}") || rc=$?
   else
-    API_STATUS=$(curl --config <(_api_curl_auth_config) "${args[@]}" "${TAU_API_BASE}${path}" </dev/null) || rc=$?
+    API_STATUS=$(curl --config <(_api_curl_auth_config) "${args[@]}" "${FICUS_API_BASE}${path}" </dev/null) || rc=$?
   fi
   if [[ ${rc} -eq 0 ]]; then
     API_BODY=$(cat "${tmp}")
@@ -2018,12 +2155,13 @@ api_is_up() { # BASE_URL
 # ------------------------------------------------------------------ bearer HTTP (VM/DNS providers)
 
 # Generic bearer-auth JSON HTTP, for provision.sh's VM/DNS provider APIs
-# (Hetzner, Cloudflare). Unlike api_request (one fixed TAU_API_BASE/TAU_BEARER
+# (Hetzner, Cloudflare). Unlike api_request (one fixed FICUS_API_BASE/FICUS_BEARER
 # pair) this takes BASE and TOKEN per call, since a single provision.sh run
 # talks to two providers with two different tokens. Same secrets doctrine as
 # api_request: the token travels via curl --config on a process-substitution
 # fd, the body via stdin — never argv. The transport command itself is
-# ${TAU_SETUP_HTTP_CMD:-curl} so tests can substitute a record-and-assert fake
+# ${FICUS_SETUP_HTTP_CMD:-curl} (TAU_SETUP_HTTP_CMD until phase 5) so tests
+# can substitute a record-and-assert fake
 # without a real network (or shadowing the real `curl`, which api_request's
 # tests already use for their own purposes).
 HTTP_STATUS=''
@@ -2036,7 +2174,7 @@ _http_bearer_curl_config() { # TOKEN
 
 http_bearer_request() { # BASE TOKEN METHOD PATH [JSON_BODY]
   local base=$1 token=$2 method=$3 path=$4 body=${5:-}
-  local cmd=${TAU_SETUP_HTTP_CMD:-curl}
+  local cmd=${FICUS_SETUP_HTTP_CMD:-${TAU_SETUP_HTTP_CMD:-curl}}
   local tmp rc=0
   tmp=$(mktemp)
   local args=(-sS -o "${tmp}" -w '%{http_code}' -X "${method}")
@@ -2289,11 +2427,16 @@ git_env_setup() {
       cat >"${GIT_ASKPASS_HELPER}" <<'EOF'
 #!/bin/sh
 # tau-setup GIT_ASKPASS helper — answers git credential prompts from the env.
-printf '%s\n' "${TAU_SETUP_GIT_TOKEN}"
+printf '%s\n' "${FICUS_SETUP_GIT_TOKEN:-${TAU_SETUP_GIT_TOKEN:-}}"
 EOF
       chmod 700 "${GIT_ASKPASS_HELPER}"
-      trap cleanup_git_askpass EXIT
-      export TAU_SETUP_GIT_TOKEN="${token}"
+      # An entrypoint that installed the toolkit EXIT trap
+      # (env_prefix_install_traps) already removes the helper there; replacing
+      # that trap here would also drop the env restore it runs.
+      if [[ ${TOOLKIT_EXIT_TRAP_INSTALLED:-0} -ne 1 ]]; then
+        trap cleanup_git_askpass EXIT
+      fi
+      export FICUS_SETUP_GIT_TOKEN="${token}"
       export GIT_ASKPASS="${GIT_ASKPASS_HELPER}"
       export GIT_TERMINAL_PROMPT=0
       ;;
@@ -2333,6 +2476,17 @@ git_source_sync() {
       git -C "${SRC_DEST}" fetch --tags --force "${GIT_AUTH_URL}" '+refs/heads/*:refs/remotes/origin/*'
     else
       git -C "${SRC_DEST}" fetch --tags --force origin
+    fi
+    # Before the checkout moves: a caller may need to look at the target
+    # revision first (upgrade-host.sh reads its package.json to refuse a
+    # pre-rename target on a renamed host). It is handed the revision the
+    # checkout below resolves to; a failure there dies with nothing moved.
+    if [[ -n ${GIT_PRE_CHECKOUT_HOOK:-} ]]; then
+      if git -C "${SRC_DEST}" show-ref --verify --quiet "refs/remotes/origin/${SRC_REF}"; then
+        "${GIT_PRE_CHECKOUT_HOOK}" "origin/${SRC_REF}"
+      else
+        "${GIT_PRE_CHECKOUT_HOOK}" "${SRC_REF}"
+      fi
     fi
     # --force (-f) is deliberate: a re-run/upgrade must be authoritative over the
     # checkout. The build writes tracked files in place (bun.lock is re-resolved
@@ -2484,9 +2638,9 @@ build_stamp_is_current() { # SRC_DEST SERVE_WEB
   stamp=$(build_stamp_path "${src_dest}")
   [[ -f ${stamp} ]] || return 1
   head=$(git -C "${src_dest}" rev-parse HEAD 2>/dev/null) || return 1
-  stamp_commit=$(envfile_get "${stamp}" TAU_BUILD_COMMIT) || return 1
+  stamp_commit=$(envfile_get "${stamp}" FICUS_BUILD_COMMIT) || return 1
   [[ -n ${stamp_commit} && ${stamp_commit} == "${head}" ]] || return 1
-  stamp_lock=$(envfile_get "${stamp}" TAU_BUILD_LOCK_HASH) || return 1
+  stamp_lock=$(envfile_get "${stamp}" FICUS_BUILD_LOCK_HASH) || return 1
   [[ ${stamp_lock} == "$(build_lock_hash "${src_dest}")" ]] || return 1
   build_outputs_present "${src_dest}" "${serve_web}" || return 1
   # build_outputs_present only proved the paths exist; a truncated or
@@ -2495,16 +2649,16 @@ build_stamp_is_current() { # SRC_DEST SERVE_WEB
   # missing field — an older-format stamp, or a stamp written for a call that
   # didn't build that output — must NOT read as a match; it must fail closed
   # just like a missing stamp.
-  stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_CORE_INDEX)
+  stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_CORE_INDEX)
   [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/core/dist/index.js")" ]] || return 1
-  stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_CORE_WORKER)
+  stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_CORE_WORKER)
   [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/core/dist/worker.js")" ]] || return 1
-  stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_CORE_MIGRATE)
+  stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_CORE_MIGRATE)
   [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/core/dist/migrate.js")" ]] || return 1
-  stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_CLI_TAU)
+  stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_CLI_TAU)
   [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/cli/dist/tau.js")" ]] || return 1
   if [[ ${serve_web} == true ]]; then
-    stamp_hash=$(envfile_get "${stamp}" TAU_BUILD_HASH_WEB_INDEX)
+    stamp_hash=$(envfile_get "${stamp}" FICUS_BUILD_HASH_WEB_INDEX)
     [[ -n ${stamp_hash} && ${stamp_hash} == "$(build_output_hash "${src_dest}/apps/web/dist/index.html")" ]] || return 1
   fi
   return 0
@@ -2526,16 +2680,16 @@ build_stamp_write() { # SRC_DEST SERVE_WEB
   local src_dest=$1 serve_web=$2 stamp
   stamp=$(build_stamp_path "${src_dest}")
   {
-    printf 'TAU_BUILD_COMMIT=%s\n' "$(git -C "${src_dest}" rev-parse HEAD)"
-    printf 'TAU_BUILD_LOCK_HASH=%s\n' "$(build_lock_hash "${src_dest}")"
-    printf 'TAU_BUILD_HASH_CORE_INDEX=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/index.js")"
-    printf 'TAU_BUILD_HASH_CORE_WORKER=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/worker.js")"
-    printf 'TAU_BUILD_HASH_CORE_MIGRATE=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/migrate.js")"
-    printf 'TAU_BUILD_HASH_CLI_TAU=%s\n' "$(build_output_hash "${src_dest}/apps/cli/dist/tau.js")"
+    printf 'FICUS_BUILD_COMMIT=%s\n' "$(git -C "${src_dest}" rev-parse HEAD)"
+    printf 'FICUS_BUILD_LOCK_HASH=%s\n' "$(build_lock_hash "${src_dest}")"
+    printf 'FICUS_BUILD_HASH_CORE_INDEX=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/index.js")"
+    printf 'FICUS_BUILD_HASH_CORE_WORKER=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/worker.js")"
+    printf 'FICUS_BUILD_HASH_CORE_MIGRATE=%s\n' "$(build_output_hash "${src_dest}/apps/core/dist/migrate.js")"
+    printf 'FICUS_BUILD_HASH_CLI_TAU=%s\n' "$(build_output_hash "${src_dest}/apps/cli/dist/tau.js")"
     if [[ ${serve_web} == true ]]; then
-      printf 'TAU_BUILD_HASH_WEB_INDEX=%s\n' "$(build_output_hash "${src_dest}/apps/web/dist/index.html")"
+      printf 'FICUS_BUILD_HASH_WEB_INDEX=%s\n' "$(build_output_hash "${src_dest}/apps/web/dist/index.html")"
     fi
-    printf 'TAU_BUILD_AT=%s\n' "$(date -u +%FT%TZ)"
+    printf 'FICUS_BUILD_AT=%s\n' "$(date -u +%FT%TZ)"
   } >"${stamp}"
 }
 
@@ -2553,7 +2707,7 @@ build_app() { # SRC_DEST SERVE_WEB(true|false)
   _tau_build_skipped=false
   if build_stamp_is_current "${src_dest}" "${serve_web}"; then
     local stamp_commit
-    stamp_commit=$(envfile_get "$(build_stamp_path "${src_dest}")" TAU_BUILD_COMMIT)
+    stamp_commit=$(envfile_get "$(build_stamp_path "${src_dest}")" FICUS_BUILD_COMMIT)
     log_info "build current for ${stamp_commit:0:12} (bun.lock unchanged, outputs present) — skipping rebuild"
     # See the big comment above: honestly re-asserting "these outputs are
     # current" for the upgrade path's external mtime probe.
@@ -2613,7 +2767,9 @@ upgrade_result_message() { # BEFORE_SHA AFTER_SHA BUILD_SKIPPED(true|false)
 run_db_migrations() { # SRC_DEST
   local src_dest=$1 attempt
   for attempt in 1 2 3; do
-    if (cd "${src_dest}/apps/core" && TAU_MIGRATE_LIVE=1 bun run db:migrate); then
+    # Both spellings, per invocation (not an env file): the checkout being
+    # migrated may predate the Ficus rename and read only TAU_MIGRATE_LIVE.
+    if (cd "${src_dest}/apps/core" && FICUS_MIGRATE_LIVE=1 TAU_MIGRATE_LIVE=1 bun run db:migrate); then
       log_info "migrations complete"
       return 0
     fi
@@ -2751,12 +2907,12 @@ artifact_current_release_id() { # DEST
 }
 
 # The stdout trailer the control plane parses to learn what this run did.
-# TAU_RELEASE_ROLLED_BACK is emitted by artifact_activate itself (it is the
+# FICUS_RELEASE_ROLLED_BACK is emitted by artifact_activate itself (it is the
 # only code that knows whether the flip survived), so it is deliberately NOT
 # printed here — printing it twice would let a caller's stale value shadow the
 # real outcome.
 artifact_emit_release_trailer() { # BEFORE AFTER
-  printf 'TAU_RELEASE_BEFORE=%s\nTAU_RELEASE_AFTER=%s\n' "${1:-unknown}" "${2:-unknown}"
+  printf 'FICUS_RELEASE_BEFORE=%s\nFICUS_RELEASE_AFTER=%s\n' "${1:-unknown}" "${2:-unknown}"
 }
 
 # Abort an acquire: delete the half-downloaded incoming dir, print the machine
@@ -2773,7 +2929,7 @@ _artifact_fail() { # INCOMING_DIR TOKEN MESSAGE...
   shift 2
   log_error "$*"
   if [[ -n ${incoming} ]]; then rm -rf "${incoming}"; fi
-  printf 'TAU_ARTIFACT_ERROR=%s\n' "${token}"
+  printf 'FICUS_ARTIFACT_ERROR=%s\n' "${token}"
   exit 1
 }
 
@@ -2795,7 +2951,7 @@ _artifact_symlink_swap() { # TARGET LINK
 # also the RESUME signal (see below), so it is the trigger, not "releases/ is
 # absent".
 #
-# What does NOT move: `.env` (the secrets — TAU_ENCRYPTION_KEY among them —
+# What does NOT move: `.env` (the secrets — FICUS_ENCRYPTION_KEY among them —
 # live at <dest>/.env in BOTH layouts, which is exactly why the units keep
 # `EnvironmentFile=<dest>/.env` while their WorkingDirectory follows the run
 # root), `releases/` itself, `.tau-build-stamp` (a claim about a checkout that
@@ -2894,7 +3050,7 @@ _artifact_curl_download() { # OUT_FILE URL
 #              1) "<sha> <digest12>"
 #              2) the path of the verified, extracted tree (feed both to
 #                 artifact_stage)
-#   failure: one stdout line "TAU_ARTIFACT_ERROR=<token>" and a non-zero EXIT
+#   failure: one stdout line "FICUS_ARTIFACT_ERROR=<token>" and a non-zero EXIT
 #            (not a return — see _artifact_fail). Tokens: download_failed,
 #            sig_invalid, hash_mismatch, bun_mismatch, manifest_invalid.
 #
@@ -3104,33 +3260,50 @@ _artifact_discard_incoming() { # DEST TREE
 # value containing backticks or $(...) would EXECUTE, as root, from a file
 # whose whole purpose is to hold secrets nobody vets for shell syntax.
 #
-# TAU_ROOT is exported AFTER the file is read, so a TAU_ROOT that happens to
+# FICUS_ROOT is exported AFTER the file is read, so a FICUS_ROOT that happens to
 # live in .env (pointing at `current`, i.e. the OLD tree) cannot shadow the
-# candidate being migrated. The `|| [[ -n ${line} ]]` keeps a final line with
+# candidate being migrated. Both spellings are exported, and the caller sets
+# both *_MIGRATE_LIVE: a pre-rename candidate reads TAU_ROOT and
+# TAU_MIGRATE_LIVE (run-migrations.ts, paths.ts), a Ficus one FICUS_ (its
+# bridge then drops the TAU_ copies). Per-invocation env, not an env file. The `|| [[ -n ${line} ]]` keeps a final line with
 # no trailing newline.
 # shellcheck disable=SC2016 # deliberate: this expands in the child shell, not here
 _ARTIFACT_MIGRATE_PROGRAM='while IFS= read -r line || [[ -n ${line} ]]; do
   if [[ -z ${line} || ${line} == \#* || ${line} != *=* ]]; then continue; fi
   export "${line%%=*}=${line#*=}"
 done <"$1"
-export TAU_ROOT="$2"
+export FICUS_ROOT="$2" TAU_ROOT="$2"
 cd "$2/apps/core" && exec bun dist/migrate.js'
 
 # Put a staged release into service: migrate from the CANDIDATE, flip the
 # symlink, restart, and roll back if the box does not come up.
 #
 # The migrate runs BEFORE the flip so a migration failure leaves `current`
-# untouched, and it runs from the candidate with TAU_ROOT pinned to it — never
+# untouched, and it runs from the candidate with FICUS_ROOT pinned to it — never
 # inherited, which would point the runner at the OLD `current` tree. The
 # candidate carries no .env of its own (secrets live at <dest>/.env, outside
 # the releases), so the DB env is sourced explicitly and only for that step —
 # the #937 failure class, where a runner that had always been started from a
 # directory containing .env silently lost its database URL.
 #
-# Emits TAU_RELEASE_ROLLED_BACK=0|1 on stdout. Returns non-zero if the release
+# Emits FICUS_RELEASE_ROLLED_BACK=0|1 on stdout. Returns non-zero if the release
 # did not end up serving, whether or not the rollback itself succeeded.
+#
+# Two optional hooks (function names, empty = none):
+#   ARTIFACT_PREFLIP_HOOK   called as `<hook> RELEASE_DIR` after the candidate
+#                           migration succeeded and immediately before the
+#                           first symlink swap — upgrade-host.sh renames the
+#                           host's env files there, so the old release serves
+#                           renamed files for no longer than this one step. A
+#                           failure ends the activation with `current`
+#                           untouched (and the caller's EXIT trap restores).
+#   ARTIFACT_ROLLBACK_HOOK  called with no arguments after the symlinks are
+#                           swapped back and before the rollback restart —
+#                           upgrade-host.sh restores the env backup set there.
+#                           Its failure is logged; the rollback restart still
+#                           runs.
 artifact_activate() { # DEST RELEASE_DIR CORE_PORT
-  local dest=$1 release_dir=$2 core_port=$3 cur_before prev_before attempt
+  local dest=$1 release_dir=$2 core_port=$3 cur_before prev_before attempt hook_rc
   [[ -f ${release_dir}/.tau-release-complete ]] ||
     die "artifact_activate: ${release_dir} has no .tau-release-complete marker — refusing to activate an unverified tree"
   [[ -f ${dest}/.env ]] ||
@@ -3138,7 +3311,7 @@ artifact_activate() { # DEST RELEASE_DIR CORE_PORT
 
   # --- 1. migrate from the candidate (forward-only, same retry as git mode) --
   for attempt in 1 2 3; do
-    if env TAU_ROOT="${release_dir}" TAU_MIGRATE_LIVE=1 \
+    if env FICUS_ROOT="${release_dir}" TAU_ROOT="${release_dir}" FICUS_MIGRATE_LIVE=1 TAU_MIGRATE_LIVE=1 \
       bash -c "${_ARTIFACT_MIGRATE_PROGRAM}" tau-migrate "${dest}/.env" "${release_dir}"; then
       log_info "migrations complete (candidate ${release_dir})"
       break
@@ -3152,6 +3325,18 @@ artifact_activate() { # DEST RELEASE_DIR CORE_PORT
   # --- 2. the flip (one rename; previous only moves on a successful flip) ----
   cur_before=$(readlink "${dest}/current" 2>/dev/null || true)
   prev_before=$(readlink "${dest}/previous" 2>/dev/null || true)
+  if [[ -n ${ARTIFACT_PREFLIP_HOOK:-} ]]; then
+    declare -F "${ARTIFACT_PREFLIP_HOOK}" >/dev/null ||
+      die "artifact_activate: ARTIFACT_PREFLIP_HOOK '${ARTIFACT_PREFLIP_HOOK}' is not a function — 'current' left untouched"
+    # A plain call, not `hook || …`: that form would suppress errexit inside
+    # the hook. With errexit live a failure ends the script here; without it
+    # (a caller's condition), the status check below does.
+    hook_rc=0
+    "${ARTIFACT_PREFLIP_HOOK}" "${release_dir}"
+    hook_rc=$?
+    [[ ${hook_rc} -eq 0 ]] ||
+      die "artifact_activate: the pre-flip hook failed (${hook_rc}) — 'current' left untouched"
+  fi
   _artifact_symlink_swap "${release_dir}" "${dest}/current"
   # Re-activating the release that is ALREADY current displaces nothing, so
   # `previous` must not move. Setting previous=current there would destroy the
@@ -3171,7 +3356,7 @@ artifact_activate() { # DEST RELEASE_DIR CORE_PORT
   # In a SUBSHELL: restart_core_services die()s on an unhealthy box, and a die
   # in this shell would take the rollback with it.
   if (restart_core_services "${core_port}"); then
-    printf 'TAU_RELEASE_ROLLED_BACK=0\n'
+    printf 'FICUS_RELEASE_ROLLED_BACK=0\n'
     return 0
   fi
 
@@ -3182,7 +3367,7 @@ artifact_activate() { # DEST RELEASE_DIR CORE_PORT
   # rollback that never happened.
   if [[ -z ${cur_before} || ${cur_before} == "${release_dir}" ]]; then
     log_error "no earlier release to roll back to — ${dest}/current still points at the failed release"
-    printf 'TAU_RELEASE_ROLLED_BACK=0\n'
+    printf 'FICUS_RELEASE_ROLLED_BACK=0\n'
     return 1
   fi
   log_error "rolling back: current -> $(basename "${cur_before}")"
@@ -3195,10 +3380,15 @@ artifact_activate() { # DEST RELEASE_DIR CORE_PORT
   else
     rm -f "${dest}/previous"
   fi
+  if [[ -n ${ARTIFACT_ROLLBACK_HOOK:-} ]]; then
+    if ! "${ARTIFACT_ROLLBACK_HOOK}"; then
+      log_error "the rollback hook (${ARTIFACT_ROLLBACK_HOOK}) failed — continuing with the rollback restart"
+    fi
+  fi
   # Best effort — but a failed rollback restart must NOT turn into a zero exit.
   (restart_core_services "${core_port}") ||
     log_error "the rollback restart ALSO failed — this box needs an operator"
-  printf 'TAU_RELEASE_ROLLED_BACK=1\n'
+  printf 'FICUS_RELEASE_ROLLED_BACK=1\n'
   return 1
 }
 
@@ -3232,6 +3422,1384 @@ artifact_retention() { # DEST
   fi
 }
 
+# ------------------------------------------------ env prefix rename (Ficus)
+#
+# The Ficus rename renames every TAU_* setting to FICUS_*. Core reads FICUS_*
+# from the release that ships the rename on (with a one-release in-process
+# fallback, packages/shared/src/legacy-env.ts), so the host's env-bearing files
+# are HARD-RENAMED — once, by the upgrade that moves the host onto that
+# release, and never before:
+#
+#   <dest>/.env, managed.env, backup.env    KEY= / export KEY= lines
+#   the host config yaml                    .core.env.<P>_* keys
+#   the core API and worker units + drop-ins  Environment=<P>_ lines
+#   the installed tau-backup.sh             re-rendered from the template
+#
+# Only NAMES change. Values — the host's install paths included — and file
+# locations are phase-5 identity and stay exactly as they are.
+#
+# Safety, in the order it happens:
+#   * direction: the TARGET prefix comes from the release being activated
+#     (core_release_env_prefix: artifact.json .envPrefix, else package.json
+#     .name), never from a literal. A pre-rename target on a renamed host is
+#     refused before anything changes.
+#   * conflicts (Ruling 24): TAU_X and FICUS_X that both exist with DIFFERENT
+#     values for a suffix containing ENCRYPTION_KEY or PASSWORD stop the run
+#     before a single byte is written. Messages name keys, never values.
+#   * backup set: every env-bearing file is copied byte for byte (cp -p, cmp,
+#     sha256 in a MANIFEST) into ${ENV_RENAME_BACKUP_ROOT}/<ts>-<rand>/, root
+#     0700. The set holds PLAINTEXT SECRETS; the newest five are kept.
+#   * journal: PENDING (<set>\t<target>\t<release>) is fsynced before the
+#     first rename and removed on commit or on a verified restore. A run that
+#     dies without either — KILL, OOM, reboot — leaves it for the next toolkit
+#     run, whose env_prefix_reconcile makes the files match the ACTIVE
+#     release: restore when it reads TAU_, finish the rename when it reads
+#     FICUS_.
+#   * restore: the EXIT/TERM/HUP/INT traps (env_prefix_install_traps) and the
+#     artifact rollback hook put the set back when a run fails after renaming.
+#
+# Every function here checks every step explicitly (die / return 1) instead of
+# leaning on errexit: callers run them inside `$(...)`, `if !` and `||`
+# spans, where bash suppresses errexit for the whole dynamic extent.
+
+# Where backup sets and the PENDING journal live. Read at CALL time, so a test
+# (or an operator) can point it elsewhere after sourcing this file.
+env_rename_backup_root() {
+  printf '%s' "${ENV_RENAME_BACKUP_ROOT:-/var/backups/ficus-env-rename}"
+}
+
+# Run state for the current toolkit invocation (see the traps below).
+ENV_RENAME_PENDING=0
+ENV_RENAME_BACKUP_SET=''
+
+_epr_is_prefix() { [[ $1 == FICUS || $1 == TAU ]]; }
+
+# The rename, the restore and the reconcile write root-owned files (the backup
+# root, managed.env, backup.env, the units) and are ROOT-ONLY (Controller
+# Ruling 30). A non-root (sudo) run takes no lock and proceeds only while none
+# of them is needed; it refuses otherwise, with the reason.
+_epr_is_root() { [[ ${EUID} -eq 0 ]]; }
+_epr_require_prefixes() { # CALLER FROM TO
+  if ! _epr_is_prefix "$2" || ! _epr_is_prefix "$3"; then
+    die "$1: prefixes must be TAU or FICUS (got '$2' -> '$3')"
+  fi
+}
+_epr_protected() { [[ $1 == *ENCRYPTION_KEY* || $1 == *PASSWORD* ]]; }
+_epr_managed_keys() { [[ $1 == MANAGED_SECRET_KEYS || $1 == *_MANAGED_SECRET_KEYS ]]; }
+
+# Trim [[:space:]] (C locale) off both ends / the start of $1 into _EPR_OUT.
+_epr_trim() {
+  local v=$1
+  v=${v#"${v%%[![:space:]]*}"}
+  _EPR_OUT=${v%"${v##*[![:space:]]}"}
+}
+_epr_trim_start() {
+  local v=$1
+  _EPR_OUT=${v#"${v%%[![:space:]]*}"}
+}
+
+# Index of the first QUOTE in TEXT not escaped by a backslash, or -1, into
+# _EPR_CLOSE (renameEnvPrefix's findClosingQuote).
+_epr_find_close() { # TEXT QUOTE
+  local t=$1 q=$2 i=0 n=${#1} c
+  while ((i < n)); do
+    c=${t:i:1}
+    if [[ ${c} == "\\" ]]; then
+      i=$((i + 2))
+      continue
+    fi
+    if [[ ${c} == "${q}" ]]; then
+      _EPR_CLOSE=${i}
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  _EPR_CLOSE=-1
+}
+
+# The value as a dotenv reader sees it, for comparing two entries: trimmed,
+# one level of surrounding quotes removed (renameEnvPrefix's normalizedValue).
+_epr_normalize() { # RAW -> _EPR_OUT
+  local v q
+  _epr_trim "$1"
+  v=${_EPR_OUT}
+  q=${v:0:1}
+  if [[ ${q} == '"' || ${q} == "'" || ${q} == '`' ]]; then
+    _epr_find_close "${v:1}" "${q}"
+    if ((_EPR_CLOSE == -1)); then _EPR_OUT=${v:1}; else _EPR_OUT=${v:1:_EPR_CLOSE}; fi
+  else
+    _EPR_OUT=${v}
+  fi
+}
+
+# Map the comma-separated names of a *_MANAGED_SECRET_KEYS value to TO
+# (mapManagedKeyList): items trimmed, empty items dropped.
+_epr_map_list() { # VALUE FROM TO -> _EPR_OUT
+  local rest=$1 from=$2_ to=$3_ item out='' first=1
+  while :; do
+    if [[ ${rest} == *,* ]]; then
+      item=${rest%%,*}
+      rest=${rest#*,}
+    else
+      item=${rest}
+      rest=''
+    fi
+    _epr_trim "${item}"
+    item=${_EPR_OUT}
+    if [[ -n ${item} ]]; then
+      [[ ${item} == "${from}"* ]] && item=${to}${item#"${from}"}
+      if ((first)); then out=${item}; else out+=",${item}"; fi
+      first=0
+    fi
+    [[ -n ${rest} ]] || break
+  done
+  _EPR_OUT=${out}
+}
+
+# A raw *_MANAGED_SECRET_KEYS value mapped, keeping surrounding quotes
+# (mapManagedKeyValue).
+_epr_map_value() { # RAW FROM TO -> _EPR_OUT
+  local v q
+  _epr_trim "$1"
+  v=${_EPR_OUT}
+  q=${v:0:1}
+  if ((${#v} >= 2)) && [[ (${q} == '"' || ${q} == "'") && ${v: -1} == "${q}" ]]; then
+    _epr_map_list "${v:1:${#v}-2}" "$2" "$3"
+    _EPR_OUT="${q}${_EPR_OUT}${q}"
+  else
+    _epr_map_list "${v}" "$2" "$3"
+  fi
+}
+
+# Split RAW exactly like JavaScript's split('\n') into _EPR_LINES (a trailing
+# newline yields a final empty element, so a join restores RAW byte for byte).
+_epr_split_lines() { # RAW
+  local rest=$1
+  _EPR_LINES=()
+  while [[ ${rest} == *$'\n'* ]]; do
+    _EPR_LINES+=("${rest%%$'\n'*}")
+    rest=${rest#*$'\n'}
+  done
+  _EPR_LINES+=("${rest}")
+}
+
+# Parse the KEY= assignments of _EPR_LINES (renameEnvPrefix's parseEnvEntries):
+# `KEY=` with no space around `=`, optionally after indentation and `export `.
+# A value that opens a quote and does not close it on the same line continues
+# to the closing quote, so a KEY= line inside a PEM block is value text.
+_epr_parse_entries() {
+  local n=${#_EPR_LINES[@]} i=0 end body eol first opened q cont value
+  local re='^([[:space:]]*(export[[:space:]]+)?)([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+  _E_START=() _E_END=() _E_LEAD=() _E_KEY=() _E_FIRST=() _E_EOL=() _E_VALUE=()
+  while ((i < n)); do
+    body=${_EPR_LINES[i]}
+    eol=''
+    if [[ ${body} == *$'\r' ]]; then
+      body=${body%$'\r'}
+      eol=$'\r'
+    fi
+    # JavaScript's `.` stops at a bare CR, so such a line is not an entry there.
+    if [[ ${body} =~ ${re} && ${BASH_REMATCH[4]} != *$'\r'* ]]; then
+      first=${BASH_REMATCH[4]}
+      _E_LEAD+=("${BASH_REMATCH[1]}")
+      _E_KEY+=("${BASH_REMATCH[3]}")
+      _E_FIRST+=("${first}")
+      _E_EOL+=("${eol}")
+      _E_START+=("${i}")
+      end=${i}
+      value=${first}
+      _epr_trim_start "${first}"
+      opened=${_EPR_OUT}
+      q=${opened:0:1}
+      if [[ ${q} == '"' || ${q} == "'" || ${q} == '`' ]]; then
+        _epr_find_close "${opened:1}" "${q}"
+        if ((_EPR_CLOSE == -1)); then
+          while ((end + 1 < n)); do
+            end=$((end + 1))
+            cont=${_EPR_LINES[end]}
+            cont=${cont%$'\r'}
+            value+=$'\n'"${cont}"
+            _epr_find_close "${cont}" "${q}"
+            if ((_EPR_CLOSE != -1)); then break; fi
+          done
+        fi
+      fi
+      _E_END+=("${end}")
+      _E_VALUE+=("${value}")
+      i=$((end + 1))
+    else
+      i=$((i + 1))
+    fi
+  done
+}
+
+# Is NEEDLE one of the remaining arguments?
+_epr_in() { # NEEDLE ITEM...
+  local needle=$1 item
+  shift
+  for item in "$@"; do
+    [[ ${item} == "${needle}" ]] && return 0
+  done
+  return 1
+}
+
+# The shell twin of renameEnvPrefix (packages/shared/src/legacy-env.ts), over
+# the CONTENT of a dotenv file. Same semantics, pinned by lib.test.sh's
+# TypeScript parity cases:
+#   * every KEY= / export KEY= entry whose key starts with FROM_ becomes TO_;
+#     comments, blank lines, order, CRLF endings and multi-line values kept;
+#   * a TO_ entry for the same suffix wins and the FROM_ entry is dropped
+#     (listed in _EPR_CONFLICTS when the values differ); identical values are
+#     dropped silently;
+#   * an empty TO_ value counts as unset (the FROM_ entry is renamed in place
+#     and the empty TO_ entry dropped); an empty FROM_ value is dropped;
+#   * *_MANAGED_SECRET_KEYS items are mapped to TO_;
+#   * a PROTECTED suffix (ENCRYPTION_KEY / PASSWORD) with different non-empty
+#     values returns 2 with the FROM_ keys in _EPR_PROTECTED and builds
+#     nothing (Ruling 24).
+# Sets _EPR_RESULT, _EPR_RENAMED (keys), _EPR_RENAMED_LINES, _EPR_CONFLICTS
+# and _EPR_PROTECTED. Pure: never touches a file.
+_epr_rename_content() { # RAW FROM TO
+  local raw=$1 from=$2 to=$3 k j n suffix val tval target
+  local -a tv_suf=() tv_val=() src=() drop_at=() repl_at=() repl_line=()
+  _EPR_RESULT='' _EPR_RENAMED=() _EPR_RENAMED_LINES=0 _EPR_CONFLICTS=() _EPR_PROTECTED=()
+  _epr_split_lines "${raw}"
+  _epr_parse_entries
+  n=${#_E_KEY[@]}
+
+  # Existing TO_ values by suffix (the last one wins, as in dotenv), and the
+  # suffixes that have a non-empty FROM_ value.
+  for ((k = 0; k < n; k++)); do
+    if [[ ${_E_KEY[k]} == "${to}_"?* ]]; then
+      suffix=${_E_KEY[k]#"${to}_"}
+      _epr_normalize "${_E_VALUE[k]}"
+      for ((j = 0; j < ${#tv_suf[@]}; j++)); do
+        [[ ${tv_suf[j]} == "${suffix}" ]] && break
+      done
+      tv_suf[j]=${suffix}
+      tv_val[j]=${_EPR_OUT}
+    fi
+    if [[ ${_E_KEY[k]} == "${from}_"?* ]]; then
+      _epr_normalize "${_E_VALUE[k]}"
+      [[ -n ${_EPR_OUT} ]] && src+=("${_E_KEY[k]#"${from}_"}")
+    fi
+  done
+
+  # _epr_target SUFFIX -> 0 with the winning TO_ value in _EPR_TV, 1 when TO_
+  # is unset or empty. 2 in _EPR_TV_STATE marks "set but empty".
+  _epr_target() {
+    local s=$1 i
+    _EPR_TV='' _EPR_TV_STATE=0
+    for ((i = 0; i < ${#tv_suf[@]}; i++)); do
+      if [[ ${tv_suf[i]} == "${s}" ]]; then
+        _EPR_TV=${tv_val[i]}
+        if [[ -n ${_EPR_TV} ]]; then
+          _EPR_TV_STATE=1
+          return 0
+        fi
+        _EPR_TV_STATE=2
+        return 1
+      fi
+    done
+    return 1
+  }
+
+  for ((k = 0; k < n; k++)); do
+    [[ ${_E_KEY[k]} == "${from}_"?* ]] || continue
+    suffix=${_E_KEY[k]#"${from}_"}
+    _epr_protected "${suffix}" || continue
+    _epr_target "${suffix}" || continue
+    tval=${_EPR_TV}
+    _epr_normalize "${_E_VALUE[k]}"
+    if [[ -n ${_EPR_OUT} && ${_EPR_OUT} != "${tval}" ]] && ! _epr_in "${_E_KEY[k]}" ${_EPR_PROTECTED[@]+"${_EPR_PROTECTED[@]}"}; then
+      _EPR_PROTECTED+=("${_E_KEY[k]}")
+    fi
+  done
+  if ((${#_EPR_PROTECTED[@]} > 0)); then
+    unset -f _epr_target
+    return 2
+  fi
+
+  for ((k = 0; k < n; k++)); do
+    if [[ ${_E_KEY[k]} == "${to}_"?* ]]; then
+      suffix=${_E_KEY[k]#"${to}_"}
+      if ! _epr_target "${suffix}" && _epr_in "${suffix}" ${src[@]+"${src[@]}"}; then
+        drop_at+=("${_E_START[k]}")
+      fi
+      continue
+    fi
+    [[ ${_E_KEY[k]} == "${from}_"?* ]] || continue
+    suffix=${_E_KEY[k]#"${from}_"}
+    _epr_normalize "${_E_VALUE[k]}"
+    val=${_EPR_OUT}
+    target=0
+    _epr_target "${suffix}" && target=1
+    if ((target)) || [[ ${_EPR_TV_STATE} -eq 2 && -z ${val} ]]; then
+      if ((target)) && [[ -n ${val} && ${val} != "${_EPR_TV}" ]] && ! _epr_in "${_E_KEY[k]}" ${_EPR_CONFLICTS[@]+"${_EPR_CONFLICTS[@]}"}; then
+        _EPR_CONFLICTS+=("${_E_KEY[k]}")
+      fi
+      drop_at+=("${_E_START[k]}")
+      continue
+    fi
+    val=${_E_FIRST[k]}
+    if [[ ${_E_START[k]} -eq ${_E_END[k]} ]] && _epr_managed_keys "${suffix}"; then
+      _epr_map_value "${val}" "${from}" "${to}"
+      val=${_EPR_OUT}
+    fi
+    repl_at+=("${_E_START[k]}")
+    repl_line+=("${_E_LEAD[k]}${to}_${suffix}=${val}${_E_EOL[k]}")
+    _EPR_RENAMED_LINES=$((_EPR_RENAMED_LINES + 1))
+    _epr_in "${_E_KEY[k]}" ${_EPR_RENAMED[@]+"${_EPR_RENAMED[@]}"} || _EPR_RENAMED+=("${_E_KEY[k]}")
+  done
+  unset -f _epr_target
+
+  # Re-join, dropping whole entries (continuation lines included).
+  local out='' i=0 total=${#_EPR_LINES[@]} e line sep=''
+  while ((i < total)); do
+    line=${_EPR_LINES[i]}
+    e=-1
+    for ((j = 0; j < n; j++)); do
+      if [[ ${_E_START[j]} -eq ${i} ]]; then
+        e=${j}
+        break
+      fi
+    done
+    if ((e >= 0)) && _epr_in "${i}" ${drop_at[@]+"${drop_at[@]}"}; then
+      i=$((_E_END[e] + 1))
+      continue
+    fi
+    if ((e >= 0)); then
+      for ((j = 0; j < ${#repl_at[@]}; j++)); do
+        if [[ ${repl_at[j]} -eq ${i} ]]; then
+          line=${repl_line[j]}
+          break
+        fi
+      done
+    fi
+    out+="${sep}${line}"
+    sep=$'\n'
+    i=$((i + 1))
+  done
+  _EPR_RESULT=${out}
+  return 0
+}
+
+# Copy SRC's mode and owner:group onto DST (GNU --reference, else stat).
+_epr_copy_mode_owner() { # SRC DST
+  local mog
+  if ! chmod --reference="$1" "$2" 2>/dev/null; then
+    mog=$(_file_mode_owner_group "$1") || return 1
+    chmod "${mog%% *}" "$2" || return 1
+  fi
+  # Only when it differs: an unprivileged caller may not chown even to its
+  # own user when the group is one it is not a member of.
+  mog=$(_file_mode_owner_group "$1") || return 1
+  [[ $(_file_mode_owner_group "$2") == "${mog}" ]] && return 0
+  if ! chown --reference="$1" -- "$2" 2>/dev/null; then
+    chown "${mog#* }" "$2" || return 1
+  fi
+}
+
+# Replace the (already resolved) regular file TARGET with CONTENT atomically:
+# a temp file in TARGET's own directory, TARGET's mode and owner, then one
+# rename. A symlink that pointed at TARGET keeps pointing at it. Returns 1
+# after a log_error — TARGET untouched — on any failure.
+_epr_write_atomic() { # TARGET CONTENT
+  local target=$1 content=$2 dir base tmp
+  if ! dir=$(dirname -- "${target}") || ! base=$(basename -- "${target}"); then
+    log_error "cannot resolve the directory of ${target}"
+    return 1
+  fi
+  if ! tmp=$(mktemp "${dir}/.${base}.ficus-rename.XXXXXX") || [[ -z ${tmp} ]]; then
+    log_error "failed to create a staging file next to ${target}"
+    return 1
+  fi
+  if ! printf '%s' "${content}" >"${tmp}"; then
+    rm -f -- "${tmp}"
+    log_error "failed to write the staged replacement for ${target}"
+    return 1
+  fi
+  if ! _epr_copy_mode_owner "${target}" "${tmp}"; then
+    rm -f -- "${tmp}"
+    log_error "failed to copy the mode/owner of ${target} onto its staged replacement"
+    return 1
+  fi
+  if ! mv -f -- "${tmp}" "${target}"; then
+    rm -f -- "${tmp}"
+    log_error "failed to atomically replace ${target}"
+    return 1
+  fi
+}
+
+# Resolve FILE through symlinks (readlink -f) into the variable named VAR.
+# Returns 1 when FILE (or its target) does not exist as a regular file.
+_epr_resolve() { # FILE VAR
+  local _er_path
+  [[ -e $1 ]] || return 1
+  _er_path=$(readlink -f -- "$1") || return 1
+  [[ -f ${_er_path} ]] || return 1
+  printf -v "$2" '%s' "${_er_path}"
+}
+
+# The message every protected-conflict refusal uses (names only, never values).
+_epr_conflict_message() { # WHERE FROM TO SUFFIX...
+  local where=$1 from=$2 to=$3 s msg=''
+  shift 3
+  for s in "$@"; do
+    msg+="${msg:+; }${from}_${s} and ${to}_${s} disagree on this host"
+  done
+  printf '%s (%s); keep the right one, delete the other, and re-run' "${msg}" "${where}"
+}
+
+# The PROTECTED suffixes (ENCRYPTION_KEY / PASSWORD) whose FROM_ and TO_
+# entries in the dotenv FILE hold different non-empty values, one per line.
+# Prints nothing when there are none or FILE is absent. Never writes.
+envfile_prefix_conflicts() { # FILE FROM TO
+  local file=$1 from=$2 to=$3 target raw key rc=0 LC_ALL=C
+  _epr_require_prefixes envfile_prefix_conflicts "${from}" "${to}"
+  _epr_resolve "${file}" target || return 0
+  read_file_exact "${target}" raw || die "envfile_prefix_conflicts: could not read ${target}"
+  _epr_rename_content "${raw}" "${from}" "${to}" || rc=$?
+  [[ ${rc} -eq 2 ]] || return 0
+  for key in ${_EPR_PROTECTED[@]+"${_EPR_PROTECTED[@]}"}; do
+    printf '%s\n' "${key#"${from}_"}"
+  done
+}
+
+# Hard-rename the dotenv FILE's FROM_ entries to TO_ in place (the shell twin
+# of renameEnvPrefix; see _epr_rename_content for the exact rules). Dies
+# before writing anything on a protected conflict. Prints the number of
+# renamed lines; 0 — and no write — when FILE is absent or already clean.
+envfile_rename_prefix() { # FILE FROM TO
+  local file=$1 from=$2 to=$3 target raw rc=0 LC_ALL=C
+  _epr_require_prefixes envfile_rename_prefix "${from}" "${to}"
+  if ! _epr_resolve "${file}" target; then
+    printf '0\n'
+    return 0
+  fi
+  read_file_exact "${target}" raw || die "envfile_rename_prefix: could not read ${target}"
+  _epr_rename_content "${raw}" "${from}" "${to}" || rc=$?
+  if [[ ${rc} -eq 2 ]]; then
+    die "$(_epr_conflict_message "${target}" "${from}" "${to}" "${_EPR_PROTECTED[@]#"${from}_"}")"
+  fi
+  if ((${#_EPR_CONFLICTS[@]} > 0)); then
+    log_warn "${target}: kept the ${to}_ value and dropped the differing ${from}_ line for: ${_EPR_CONFLICTS[*]}"
+  fi
+  if [[ ${_EPR_RESULT} == "${raw}" ]]; then
+    printf '0\n'
+    return 0
+  fi
+  _epr_write_atomic "${target}" "${_EPR_RESULT}" || die "envfile_rename_prefix: ${target} was left unchanged"
+  if ((_EPR_RENAMED_LINES > 0)); then
+    log_info "${target}: renamed ${_EPR_RENAMED_LINES} line(s) ${from}_ -> ${to}_ (${_EPR_RENAMED[*]})"
+  fi
+  printf '%s\n' "${_EPR_RENAMED_LINES}"
+}
+
+# The .core.env keys of YAML, one per line (none when absent).
+_epr_yaml_env_keys() { # YAML
+  yq -r '(.core.env // {}) | keys | .[]' "$1" 2>/dev/null
+}
+
+# Like envfile_prefix_conflicts, for the host config's .core.env map.
+yaml_prefix_conflicts() { # YAML FROM TO
+  local yaml=$1 from=$2 to=$3 target keys key suffix fv tv
+  _epr_require_prefixes yaml_prefix_conflicts "${from}" "${to}"
+  _epr_resolve "${yaml}" target || return 0
+  keys=$(_epr_yaml_env_keys "${target}") || die "yaml_prefix_conflicts: could not read .core.env from ${target}"
+  while IFS= read -r key; do
+    [[ ${key} == "${from}_"?* ]] || continue
+    suffix=${key#"${from}_"}
+    _epr_protected "${suffix}" || continue
+    grep -qxF -- "${to}_${suffix}" <<<"${keys}" || continue
+    fv=$(K=${key} yq -r '.core.env[strenv(K)] // ""' "${target}") || die "yaml_prefix_conflicts: could not read ${target}"
+    tv=$(K=${to}_${suffix} yq -r '.core.env[strenv(K)] // ""' "${target}") || die "yaml_prefix_conflicts: could not read ${target}"
+    [[ -n ${fv} && -n ${tv} && ${fv} != "${tv}" ]] && printf '%s\n' "${suffix}"
+  done <<<"${keys}"
+  return 0
+}
+
+# Rename the host config's .core.env.<FROM>_* keys to <TO>_* (comments and
+# order kept), with renameEnvPrefix's conflict rules: a protected conflict
+# dies before any write; otherwise a non-empty TO_ key wins and the FROM_ key
+# is dropped (logged when the values differ). The edit is made on a copy next
+# to the resolved file and renamed over it, so a symlinked yaml stays a link.
+yaml_rename_env_prefix() { # YAML FROM TO
+  local yaml=$1 from=$2 to=$3 target keys key suffix twin fv tv tmp conflicts dropped=() renamed=0
+  _epr_require_prefixes yaml_rename_env_prefix "${from}" "${to}"
+  _epr_resolve "${yaml}" target || return 0
+  keys=$(_epr_yaml_env_keys "${target}") || die "yaml_rename_env_prefix: could not read .core.env from ${target}"
+  grep -q -- "^${from}_." <<<"${keys}" || return 0
+  conflicts=$(yaml_prefix_conflicts "${target}" "${from}" "${to}") || die "yaml_rename_env_prefix: could not check ${target} for conflicting settings"
+  if [[ -n ${conflicts} ]]; then
+    # shellcheck disable=SC2086 # one suffix per line, split on purpose
+    die "$(_epr_conflict_message "${target} .core.env" "${from}" "${to}" ${conflicts})"
+  fi
+  if ! tmp=$(mktemp "$(dirname -- "${target}")/.$(basename -- "${target}").ficus-rename.XXXXXX") || [[ -z ${tmp} ]]; then
+    die "yaml_rename_env_prefix: failed to create a staging file next to ${target}"
+  fi
+  if ! cp -p -- "${target}" "${tmp}"; then
+    rm -f -- "${tmp}"
+    die "yaml_rename_env_prefix: failed to stage a copy of ${target}"
+  fi
+  while IFS= read -r key; do
+    [[ ${key} == "${from}_"?* ]] || continue
+    suffix=${key#"${from}_"}
+    twin=${to}_${suffix}
+    if grep -qxF -- "${twin}" <<<"${keys}"; then
+      if ! fv=$(K=${key} yq -r '.core.env[strenv(K)] // ""' "${tmp}") ||
+        ! tv=$(K=${twin} yq -r '.core.env[strenv(K)] // ""' "${tmp}"); then
+        rm -f -- "${tmp}"
+        die "yaml_rename_env_prefix: could not read ${target}"
+      fi
+      if [[ -n ${tv} || -z ${fv} ]]; then
+        # The TO_ key wins; the FROM_ key goes.
+        [[ -n ${fv} && ${fv} != "${tv}" ]] && dropped+=("${key}")
+        if ! K=${key} yq -i 'del(.core.env[strenv(K)])' "${tmp}"; then
+          rm -f -- "${tmp}"
+          die "yaml_rename_env_prefix: failed to edit the staged copy of ${target}"
+        fi
+        continue
+      fi
+      # An empty TO_ value counts as unset: it goes, and FROM_ is renamed.
+      if ! K=${twin} yq -i 'del(.core.env[strenv(K)])' "${tmp}"; then
+        rm -f -- "${tmp}"
+        die "yaml_rename_env_prefix: failed to edit the staged copy of ${target}"
+      fi
+    fi
+    if ! K=${key} N=${twin} yq -i '(.core.env[strenv(K)] | key) = strenv(N)' "${tmp}"; then
+      rm -f -- "${tmp}"
+      die "yaml_rename_env_prefix: failed to edit the staged copy of ${target}"
+    fi
+    renamed=$((renamed + 1))
+  done <<<"${keys}"
+  if ! _epr_copy_mode_owner "${target}" "${tmp}" || ! mv -f -- "${tmp}" "${target}"; then
+    rm -f -- "${tmp}"
+    die "yaml_rename_env_prefix: failed to replace ${target} — it was left unchanged"
+  fi
+  ((${#dropped[@]} == 0)) || log_warn "${target}: kept the ${to}_ value and dropped the differing ${from}_ key for: ${dropped[*]}"
+  log_info "${target}: renamed ${renamed} .core.env key(s) ${from}_ -> ${to}_"
+}
+
+# Rename the Environment=<FROM>_… (and Environment="<FROM>_…") assignments of
+# a systemd unit or drop-in to <TO>_, nothing else. Same atomic write.
+# Prints the number of renamed lines.
+# The unit-file rename over CONTENT: sets _EPR_RESULT and _EPR_RENAMED_LINES.
+_epr_unit_rename_content() { # RAW FROM TO
+  local raw=$1 from=$2 to=$3 line out='' sep='' re
+  _EPR_RENAMED_LINES=0
+  re="^Environment=(\"?)${from}_"
+  _epr_split_lines "${raw}"
+  for line in "${_EPR_LINES[@]}"; do
+    if [[ ${line} =~ ${re} ]]; then
+      line="Environment=${BASH_REMATCH[1]}${to}_${line#"Environment=${BASH_REMATCH[1]}${from}_"}"
+      _EPR_RENAMED_LINES=$((_EPR_RENAMED_LINES + 1))
+    fi
+    out+="${sep}${line}"
+    sep=$'\n'
+  done
+  _EPR_RESULT=${out}
+}
+
+unitfile_rename_env_prefix() { # FILE FROM TO
+  local file=$1 from=$2 to=$3 target raw count LC_ALL=C
+  _epr_require_prefixes unitfile_rename_env_prefix "${from}" "${to}"
+  if ! _epr_resolve "${file}" target; then
+    printf '0\n'
+    return 0
+  fi
+  read_file_exact "${target}" raw || die "unitfile_rename_env_prefix: could not read ${target}"
+  _epr_unit_rename_content "${raw}" "${from}" "${to}"
+  count=${_EPR_RENAMED_LINES}
+  if ((count > 0)); then
+    _epr_write_atomic "${target}" "${_EPR_RESULT}" || die "unitfile_rename_env_prefix: ${target} was left unchanged"
+    log_info "${target}: renamed ${count} Environment= line(s) ${from}_ -> ${to}_"
+  fi
+  printf '%s\n' "${count}"
+}
+
+# Read <P>_SUFFIX from the dotenv FILE into the variable named VAR, preferring
+# FICUS_<SUFFIX> and falling back to the TAU_ spelling. The file is parsed the
+# way the rename parses it (_epr_parse_entries: `KEY=` / `export KEY=`,
+# indentation, CRLF, multi-line quoted values; the last assignment wins), and
+# a value is judged by what a dotenv reader sees — trimmed, one level of
+# quotes removed (_epr_normalize). FICUS_ wins only when that value is
+# non-empty (`FICUS_X=""` or `FICUS_X= ` next to a real TAU_X reads the TAU_
+# one); VAR receives that normalized value. Returns 1 when neither name is
+# present. For a PROTECTED suffix whose two names hold different non-empty
+# values it DIES, naming the keys only — so call it in the current shell (not
+# inside `$(...)`), where that die ends the run instead of reading as
+# "absent".
+#
+# PERMANENT: backup archives and hand-kept env files outlive the rename, so
+# this fallback is what keeps a pre-rename encryption key from ever being
+# replaced by a freshly generated key. Never remove the TAU_ fallback.
+envfile_read_prefixed() { # VAR FILE SUFFIX
+  local _erp_var=$1 _erp_file=$2 _erp_suffix=$3 _erp_raw _erp_k _erp_n
+  local _erp_nf='' _erp_nt='' _erp_has_ficus=0 _erp_has_tau=0 LC_ALL=C
+  [[ -f ${_erp_file} ]] || return 1
+  read_file_exact "${_erp_file}" _erp_raw || die "could not read ${_erp_file}"
+  _epr_split_lines "${_erp_raw}"
+  _epr_parse_entries
+  _erp_n=${#_E_KEY[@]}
+  for ((_erp_k = 0; _erp_k < _erp_n; _erp_k++)); do
+    if [[ ${_E_KEY[_erp_k]} == "FICUS_${_erp_suffix}" ]]; then
+      _epr_normalize "${_E_VALUE[_erp_k]}"
+      _erp_nf=${_EPR_OUT}
+      _erp_has_ficus=1
+    elif [[ ${_E_KEY[_erp_k]} == "TAU_${_erp_suffix}" ]]; then
+      _epr_normalize "${_E_VALUE[_erp_k]}"
+      _erp_nt=${_EPR_OUT}
+      _erp_has_tau=1
+    fi
+  done
+  if ((_erp_has_ficus && _erp_has_tau)) && _epr_protected "${_erp_suffix}" &&
+    [[ -n ${_erp_nf} && -n ${_erp_nt} && ${_erp_nf} != "${_erp_nt}" ]]; then
+    die "$(_epr_conflict_message "${_erp_file}" TAU FICUS "${_erp_suffix}")"
+  fi
+  if ((_erp_has_ficus)) && [[ -n ${_erp_nf} ]]; then
+    printf -v "${_erp_var}" '%s' "${_erp_nf}"
+  elif ((_erp_has_tau)); then
+    printf -v "${_erp_var}" '%s' "${_erp_nt}"
+  elif ((_erp_has_ficus)); then
+    printf -v "${_erp_var}" '%s' ''
+  else
+    return 1
+  fi
+}
+
+# Print the value envfile_read_prefixed reads (see there), or return 1.
+envfile_get_prefixed() { # FILE SUFFIX
+  local _egp_value
+  envfile_read_prefixed _egp_value "$1" "$2" || return 1
+  printf '%s' "${_egp_value}"
+}
+
+# The env prefix the host's settings use: FICUS or TAU by its encryption key,
+# else by any prefixed line, else NONE. The same rule as the control plane's
+# ENV_PREFIX_PROBE (keep the two in step).
+host_env_prefix() { # ENV_FILE
+  local file=$1 p
+  for p in FICUS TAU; do
+    if grep -q "^${p}_ENCRYPTION_KEY=" "${file}" 2>/dev/null; then
+      printf '%s\n' "${p}"
+      return 0
+    fi
+  done
+  for p in FICUS TAU; do
+    if grep -q "^${p}_" "${file}" 2>/dev/null; then
+      printf '%s\n' "${p}"
+      return 0
+    fi
+  done
+  printf 'NONE\n'
+}
+
+# The env prefix a Core release TREE reads (N-C2): artifact.json's
+# .envPrefix when the tree has one (every release from the Ficus rename on),
+# else its root package.json name — `ficus` reads FICUS_, `tau` reads TAU_
+# (a git checkout, or an artifact that predates the field). Anything else
+# dies: a wrong guess here renames a live host's settings the wrong way.
+core_release_env_prefix() { # TREE
+  local tree=$1 p name
+  have jq || die "core_release_env_prefix: jq is required"
+  [[ -d ${tree} ]] || die "core_release_env_prefix: '${tree}' is not a directory"
+  if [[ -f ${tree}/artifact.json ]]; then
+    p=$(jq -r '.envPrefix // empty' "${tree}/artifact.json" 2>/dev/null) ||
+      die "core_release_env_prefix: could not read ${tree}/artifact.json"
+    if [[ -n ${p} ]]; then
+      _epr_is_prefix "${p}" || die "core_release_env_prefix: ${tree}/artifact.json has an unknown envPrefix '${p}'"
+      printf '%s\n' "${p}"
+      return 0
+    fi
+  fi
+  [[ -f ${tree}/package.json ]] ||
+    die "core_release_env_prefix: ${tree} has neither an artifact.json envPrefix nor a package.json"
+  name=$(jq -r '.name // empty' "${tree}/package.json" 2>/dev/null) ||
+    die "core_release_env_prefix: could not read ${tree}/package.json"
+  case "${name}" in
+    ficus) printf 'FICUS\n' ;;
+    tau) printf 'TAU\n' ;;
+    *) die "core_release_env_prefix: ${tree}/package.json is named '${name}', not ficus or tau — cannot tell which env prefix it reads" ;;
+  esac
+}
+
+# The env prefix the git revision REV of the checkout at DEST reads, from its
+# root package.json as committed — read with `git show`, so it can be asked
+# before the checkout moves (N-C2). Dies when it cannot be told.
+git_rev_env_prefix() { # DEST REV
+  local json name
+  json=$(git -C "$1" show "$2:package.json" 2>/dev/null) ||
+    die "could not read package.json at revision $2 of $1"
+  name=$(jq -r '.name // empty' <<<"${json}" 2>/dev/null) ||
+    die "package.json at revision $2 of $1 is not valid JSON"
+  case "${name}" in
+    ficus) printf 'FICUS\n' ;;
+    tau) printf 'TAU\n' ;;
+    *) die "package.json at revision $2 of $1 is named '${name}', not ficus or tau — cannot tell which env prefix it reads" ;;
+  esac
+}
+
+# The release tree the services run from: what <dest>/current resolves to
+# on the artifact layout, <dest> itself for a git checkout.
+active_release_tree() {
+  if [[ -e ${SRC_DEST}/current || -L ${SRC_DEST}/current ]]; then
+    readlink -f -- "${SRC_DEST}/current" || return 1
+  else
+    printf '%s\n' "${SRC_DEST}"
+  fi
+}
+
+# The env-bearing files of this host that exist, each resolved through
+# symlinks, one per line, deduplicated. --no-units leaves out the core units
+# and their drop-ins (a git->artifact conversion in the same run re-renders
+# them; see env_rename_backup_restore).
+# Every path host_env_files considers, unresolved and unfiltered (an
+# unmatched drop-in glob stays literal): one per line.
+_host_env_candidates() { # [--no-units]
+  local f
+  printf '%s\n' "${SRC_DEST}/.env" "${FICUS_MANAGED_ENV_PATH}" "${BACKUP_ENV_TARGET}" "${CFG_FILE:-}"
+  if [[ ${1:-} != --no-units ]]; then
+    printf '%s\n' "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service # phase5-unit-name
+    for f in "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service.d/*.conf; do # phase5-unit-name
+      printf '%s\n' "${f}"
+    done
+  fi
+  printf '%s\n' "${BACKUP_SCRIPT_PATH}"
+}
+
+host_env_files() { # [--no-units]
+  local f resolved seen=$'\n' listing
+  listing=$(_host_env_candidates "$@") || return 1
+  while IFS= read -r f; do
+    [[ -n ${f} ]] || continue
+    _epr_resolve "${f}" resolved || continue
+    [[ ${seen} == *$'\n'"${resolved}"$'\n'* ]] && continue
+    seen+="${resolved}"$'\n'
+    printf '%s\n' "${resolved}"
+  done <<<"${listing}"
+}
+
+# Flush FILE's filesystem to disk (GNU `sync -f`; plain `sync` elsewhere).
+_epr_sync() { # FILE
+  if sync --version >/dev/null 2>&1; then
+    sync -f -- "$1"
+  else
+    sync
+  fi
+}
+
+_epr_sha256() { # FILE -> hex on stdout
+  local out
+  out=$(sha256sum -- "$1" 2>/dev/null) || out=$(shasum -a 256 -- "$1" 2>/dev/null) || return 1
+  printf '%s' "${out%% *}"
+}
+
+# Create a backup set of FILE... (resolved paths) and journal it. Prints the
+# set dir. Dies — having removed the partial set and never having written
+# PENDING — on any failure, so nothing is ever renamed without a verified,
+# journaled copy of what it replaces.
+env_rename_backup_create() { # TARGET RELEASE_DIR FILE...
+  local target=$1 release=$2 root setdir ts f idx=0 sha manifest='' tmp
+  shift 2
+  root=$(env_rename_backup_root)
+  _epr_is_prefix "${target}" || die "env_rename_backup_create: target must be TAU or FICUS"
+  if [[ -e ${root}/PENDING ]]; then
+    die "env_rename_backup_create: ${root}/PENDING already journals a rename — reconcile it first"
+  fi
+  if ! mkdir -p -- "${root}" || ! chmod 0700 "${root}"; then
+    die "env_rename_backup_create: could not create ${root} (root 0700)"
+  fi
+  ts=$(date -u '+%Y%m%dT%H%M%SZ') || die "env_rename_backup_create: could not read the clock"
+  if ! setdir=$(umask 077 && mktemp -d "${root}/${ts}-XXXXXX") || [[ -z ${setdir} ]]; then
+    die "env_rename_backup_create: could not create a backup set under ${root}"
+  fi
+  _epr_backup_fail() {
+    rm -rf -- "${setdir}"
+    die "env_rename_backup_create: $* — nothing was renamed"
+  }
+  chmod 0700 "${setdir}" || _epr_backup_fail "could not chmod ${setdir}"
+  for f in "$@"; do
+    idx=$((idx + 1))
+    _epr_resolve "${f}" f || _epr_backup_fail "'${f}' is not an existing file"
+    cp -p -- "${f}" "${setdir}/${idx}" || _epr_backup_fail "could not copy ${f}"
+    cmp -s -- "${f}" "${setdir}/${idx}" || _epr_backup_fail "the copy of ${f} does not match it"
+    sha=$(_epr_sha256 "${setdir}/${idx}") && [[ ${sha} =~ ^[0-9a-f]{64}$ ]] ||
+      _epr_backup_fail "could not hash the copy of ${f}"
+    manifest+="${idx}"$'\t'"${sha}"$'\t'"${f}"$'\n'
+  done
+  printf '%s' "${manifest}" >"${setdir}/MANIFEST" || _epr_backup_fail "could not write the MANIFEST"
+  if [[ ${ARTIFACT_CONVERTED_THIS_RUN:-0} -eq 1 ]]; then
+    : >"${setdir}/UNITS_EXCLUDED" || _epr_backup_fail "could not write the UNITS_EXCLUDED marker"
+  fi
+  # The journal, last: written to a temp file, flushed, then renamed into
+  # place — so PENDING exists only once the whole set is durably on disk.
+  tmp="${root}/.PENDING.tmp.$$"
+  printf '%s\t%s\t%s\n' "${setdir}" "${target}" "${release}" >"${tmp}" ||
+    { rm -f -- "${tmp}"; _epr_backup_fail "could not write the journal"; }
+  _epr_sync "${tmp}" || { rm -f -- "${tmp}"; _epr_backup_fail "could not flush the backup set to disk"; }
+  mv -f -- "${tmp}" "${root}/PENDING" || { rm -f -- "${tmp}"; _epr_backup_fail "could not install the journal"; }
+  if ! _epr_sync "${root}/PENDING"; then
+    rm -f -- "${root}/PENDING"
+    _epr_backup_fail "could not flush the journal to disk"
+  fi
+  unset -f _epr_backup_fail
+  log_info "env backup set ${setdir}: ${idx} file(s), plaintext secrets included (root 0700)"
+  printf '%s\n' "${setdir}"
+}
+
+# The first field of PENDING (the journaled set), or nothing.
+_epr_pending_set() {
+  local root line
+  root=$(env_rename_backup_root)
+  [[ -f ${root}/PENDING ]] || return 0
+  read_file_exact "${root}/PENDING" line || return 1
+  printf '%s' "${line%%$'\t'*}"
+}
+
+# Put a backup set back, byte for byte, and verify every file's sha256.
+# Returns 0 after a verified restore (removing PENDING when it journals this
+# set, then daemon-reloading), 1 on any failure (log_error; what was not yet
+# restored is untouched and PENDING is kept), and 3 — having changed nothing,
+# PENDING kept — when the set excluded the units and the unit templates are
+# not next to this script (apply-artifacts.sh). Never exits: the rollback
+# hook calls it and must still reach the rollback restart.
+env_rename_backup_restore() { # SETDIR
+  local setdir=$1 raw rest line idx sha path dir tmp got n=0 pending
+  local re=$'^([0-9]+)\t([0-9a-f]{64})\t(/.+)$'
+  local -a idxs=() shas=() paths=()
+  if [[ ! -d ${setdir} || ! -f ${setdir}/MANIFEST ]]; then
+    log_error "env restore: ${setdir} is not a backup set (no MANIFEST)"
+    return 1
+  fi
+  read_file_exact "${setdir}/MANIFEST" raw || return 1
+  rest=${raw}
+  while [[ -n ${rest} ]]; do
+    line=${rest%%$'\n'*}
+    if [[ ${line} == "${rest}" ]]; then rest=''; else rest=${rest#*$'\n'}; fi
+    [[ -n ${line} ]] || continue
+    if [[ ! ${line} =~ ${re} ]]; then
+      log_error "env restore: ${setdir}/MANIFEST has a malformed line — nothing was restored"
+      return 1
+    fi
+    idxs+=("${BASH_REMATCH[1]}")
+    shas+=("${BASH_REMATCH[2]}")
+    paths+=("${BASH_REMATCH[3]}")
+  done
+  # Every copy must still be what was backed up before ANYTHING is touched.
+  for ((n = 0; n < ${#idxs[@]}; n++)); do
+    got=$(_epr_sha256 "${setdir}/${idxs[n]}") || got=''
+    if [[ ${got} != "${shas[n]}" ]]; then
+      log_error "env restore: the backup copy of ${paths[n]} in ${setdir} does not match its MANIFEST sha256 — nothing was restored"
+      return 1
+    fi
+  done
+  if [[ -e ${setdir}/UNITS_EXCLUDED ]] && ! _epr_have_unit_templates; then
+    log_warn "env restore: ${setdir} excluded the units (a git->artifact conversion ran in the same upgrade) and the unit templates are not next to this script — leaving it journaled for the next upgrade"
+    return 3
+  fi
+  for ((n = 0; n < ${#idxs[@]}; n++)); do
+    idx=${idxs[n]} sha=${shas[n]} path=${paths[n]}
+    dir=$(dirname -- "${path}") || return 1
+    if [[ ! -d ${dir} ]]; then
+      log_error "env restore: ${dir} no longer exists — cannot restore ${path}"
+      return 1
+    fi
+    if ! tmp=$(mktemp "${dir}/.$(basename -- "${path}").ficus-restore.XXXXXX") || [[ -z ${tmp} ]]; then
+      log_error "env restore: could not stage ${path}"
+      return 1
+    fi
+    if ! cp -p -- "${setdir}/${idx}" "${tmp}"; then
+      rm -f -- "${tmp}"
+      log_error "env restore: could not stage ${path}"
+      return 1
+    fi
+    got=$(_epr_sha256 "${tmp}") || got=''
+    if [[ ${got} != "${sha}" ]]; then
+      rm -f -- "${tmp}"
+      log_error "env restore: the staged copy of ${path} does not match its sha256"
+      return 1
+    fi
+    if ! mv -f -- "${tmp}" "${path}"; then
+      rm -f -- "${tmp}"
+      log_error "env restore: could not put ${path} back"
+      return 1
+    fi
+    got=$(_epr_sha256 "${path}") || got=''
+    if [[ ${got} != "${sha}" ]]; then
+      log_error "env restore: ${path} does not match its sha256 after the restore"
+      return 1
+    fi
+  done
+  if [[ -e ${setdir}/UNITS_EXCLUDED ]]; then
+    # The pre-conversion units are never copied back: they point at the git
+    # checkout that no longer exists. Render the CURRENT layout's units in
+    # the spelling the pre-rename release reads (N-I3). A subshell, so a die
+    # in the render is contained to this restore.
+    if ! (
+      install_core_units "${SCRIPT_DIR}/systemd" TAU
+      ensure_tau_api_memory_guardrail
+    ); then
+      log_error "env restore: files restored, but re-rendering the units for the pre-rename release failed"
+      return 1
+    fi
+  fi
+  pending=$(_epr_pending_set) || pending=''
+  if [[ -n ${pending} && $(readlink -f -- "${pending}" 2>/dev/null) == "$(readlink -f -- "${setdir}" 2>/dev/null)" ]]; then
+    if ! rm -f -- "$(env_rename_backup_root)/PENDING"; then
+      log_error "env restore: files restored, but the journal could not be removed"
+      return 1
+    fi
+  fi
+  as_root systemctl daemon-reload || log_warn "env restore: systemctl daemon-reload failed"
+  log_info "env restore: ${#idxs[@]} file(s) restored byte for byte from ${setdir}"
+}
+
+# Are both core unit templates next to this toolkit copy?
+_epr_have_unit_templates() {
+  local t
+  for t in "${SCRIPT_DIR}/systemd"/tau-{api,worker}.service.tmpl; do # phase5-unit-name
+    [[ -f ${t} ]] || return 1
+  done
+}
+
+# Keep the newest five backup sets; never remove the one PENDING journals.
+env_rename_backup_prune() {
+  local root pending d name
+  local -a sets=()
+  root=$(env_rename_backup_root)
+  [[ -d ${root} ]] || return 0
+  pending=$(_epr_pending_set) || return 1
+  for d in "${root}"/*; do
+    name=${d##*/}
+    [[ -d ${d} && ${name} =~ ^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9]{6}$ ]] && sets+=("${d}")
+  done
+  ((${#sets[@]} > 5)) || return 0
+  for d in "${sets[@]:0:${#sets[@]}-5}"; do
+    [[ ${d} == "${pending}" ]] && continue
+    rm -rf -- "${d}" || return 1
+    log_info "pruned env backup set ${d}"
+  done
+}
+
+# Does FILE have a line that step 8 below would rename? $2 is the kind.
+_epr_needs_rename() { # FILE dotenv|yaml|unit|backup_script
+  local rc=0 from=TAU keys raw rrc=0 LC_ALL=C
+  case "$2" in
+    dotenv | unit)
+      # Exactly what the rename would do: a TAU_ line inside a multi-line
+      # value (a PEM block) is value text, and must not make a set every run.
+      read_file_exact "$1" raw || die "could not read $1"
+      if [[ $2 == dotenv ]]; then
+        _epr_rename_content "${raw}" "${from}" FICUS || rrc=$?
+        # A protected conflict (2) is a change the rename would stop on.
+        [[ ${rrc} -eq 2 ]] && return 0
+      else
+        _epr_unit_rename_content "${raw}" "${from}" FICUS
+      fi
+      [[ ${_EPR_RESULT} != "${raw}" ]]
+      return
+      ;;
+    yaml)
+      keys=$(_epr_yaml_env_keys "$1") || die "could not read .core.env from $1"
+      grep -q "^${from}_." <<<"${keys}" || rc=$?
+      ;;
+    backup_script) grep -qF "${from}_BACKUP_" -- "$1" || rc=$? ;;
+  esac
+  ((rc <= 1)) || die "could not read $1"
+  return "${rc}"
+}
+
+# Step 8 of migrate_env_prefix_host: rename every env-bearing file (each a
+# no-op when already clean). Shared with env_prefix_reconcile.
+_env_prefix_rename_files() { # [--no-units]
+  local f
+  for f in "${SRC_DEST}/.env" "${FICUS_MANAGED_ENV_PATH}" "${BACKUP_ENV_TARGET}"; do
+    envfile_rename_prefix "${f}" TAU FICUS >/dev/null || die "renaming ${f} failed"
+  done
+  if [[ -n ${CFG_FILE:-} ]]; then
+    yaml_rename_env_prefix "${CFG_FILE}" TAU FICUS
+  fi
+  if [[ ${1:-} != --no-units ]]; then
+    for f in "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service "${FICUS_SYSTEMD_UNIT_DIR}"/tau-{api,worker}.service.d/*.conf; do # phase5-unit-name
+      [[ -e ${f} ]] || continue
+      unitfile_rename_env_prefix "${f}" TAU FICUS >/dev/null || die "renaming ${f} failed"
+    done
+  fi
+  if [[ -f ${BACKUP_SCRIPT_PATH} ]] && _epr_needs_rename "${BACKUP_SCRIPT_PATH}" backup_script; then
+    backup_script_rerender "${SCRIPT_DIR}/tau-backup.sh.tmpl"
+  fi
+}
+
+# Hard-rename this host's settings to the TARGET prefix, with a journaled
+# backup set (see the section header). TAU as the target renames nothing and
+# refuses a host whose settings are already FICUS_. Leaves ENV_RENAME_PENDING=1
+# after renaming: the caller commits (env_prefix_commit) once the release that
+# reads the new names is serving; otherwise the traps settle it by the active
+# release (env_prefix_settle_pending). Root-only: a non-root run refuses when a
+# rename is needed (require_env_rename_privilege) and proceeds otherwise.
+migrate_env_prefix_host() { # TARGET [RELEASE_DIR]
+  local target=$1 release=${2:-} root current listing f kind c conflicts='' need=0 no_units=''
+  local -a files=()
+  _epr_is_prefix "${target}" || die "migrate_env_prefix_host: target must be TAU or FICUS (got '${target}')"
+  root=$(env_rename_backup_root)
+  if [[ -e ${root}/PENDING ]]; then
+    local rc=0
+    env_prefix_reconcile || rc=$?
+    [[ ${rc} -eq 0 ]] || die "a pending env rename (${root}/PENDING) could not be reconciled (rc ${rc}) — nothing new was renamed"
+  fi
+  current=$(host_env_prefix "${SRC_DEST}/.env")
+  if [[ ${target} == TAU && ${current} == FICUS ]]; then
+    die "target Core predates the Ficus rename but this host's settings are FICUS_*; re-run with --restore-env-backup <set> (see ${root}) or choose a Ficus release"
+  fi
+  if [[ ${target} == TAU ]]; then
+    return 0
+  fi
+  if ! _epr_is_root; then
+    require_env_rename_privilege FICUS
+    log_info "env prefix: every host env file is readable and none needs renaming (non-root run)"
+    return 0
+  fi
+  [[ ${ARTIFACT_CONVERTED_THIS_RUN:-0} -eq 1 ]] && no_units=--no-units
+  # shellcheck disable=SC2086 # an empty ${no_units} must vanish, not pass ''
+  listing=$(host_env_files ${no_units}) || die "could not list this host's env files"
+  while IFS= read -r f; do
+    [[ -n ${f} ]] && files+=("${f}")
+  done <<<"${listing}"
+
+  # Ruling 24: a protected conflict anywhere stops the run before any write.
+  # (${c} is one suffix per line, split into arguments on purpose.)
+  # shellcheck disable=SC2086
+  for f in "${SRC_DEST}/.env" "${FICUS_MANAGED_ENV_PATH}" "${BACKUP_ENV_TARGET}"; do
+    c=$(envfile_prefix_conflicts "${f}" TAU FICUS) || die "could not check ${f} for conflicting settings"
+    [[ -z ${c} ]] || conflicts+="${conflicts:+; }$(_epr_conflict_message "${f}" TAU FICUS ${c})"
+  done
+  if [[ -n ${CFG_FILE:-} ]]; then
+    c=$(yaml_prefix_conflicts "${CFG_FILE}" TAU FICUS) || die "could not check ${CFG_FILE} for conflicting settings"
+    # shellcheck disable=SC2086 # one suffix per line, split on purpose
+    [[ -z ${c} ]] || conflicts+="${conflicts:+; }$(_epr_conflict_message "${CFG_FILE} .core.env" TAU FICUS ${c})"
+  fi
+  [[ -z ${conflicts} ]] || die "refusing to rename this host's settings: ${conflicts}"
+
+  # Per file: will anything change? (No ".env is already FICUS" shortcut —
+  # a half-renamed host is finished file by file.)
+  for f in ${files[@]+"${files[@]}"}; do
+    kind=dotenv
+    [[ ${f} == "$(readlink -f -- "${CFG_FILE:-/nonexistent}" 2>/dev/null)" ]] && kind=yaml
+    [[ ${f} == *.service || ${f} == *.conf ]] && kind=unit
+    [[ ${f} == "$(readlink -f -- "${BACKUP_SCRIPT_PATH}" 2>/dev/null)" ]] && kind=backup_script
+    if _epr_needs_rename "${f}" "${kind}"; then
+      need=1
+      break
+    fi
+  done
+  if ((need == 0)); then
+    log_info "env prefix already FICUS (all files)"
+    return 0
+  fi
+
+  ENV_RENAME_BACKUP_SET=$(env_rename_backup_create FICUS "${release}" "${files[@]}") && [[ -n ${ENV_RENAME_BACKUP_SET} ]] ||
+    die "could not create the env backup set — nothing was renamed"
+  ENV_RENAME_BACKUP_SET=${ENV_RENAME_BACKUP_SET%$'\n'}
+  ENV_RENAME_PENDING=1
+  log_info "renaming this host's TAU_* settings to FICUS_* (backup set ${ENV_RENAME_BACKUP_SET}; if this run fails, it is restored before the flip or finished forward after it)"
+  # shellcheck disable=SC2086 # an empty ${no_units} must vanish, not pass ''
+  _env_prefix_rename_files ${no_units}
+  _epr_sync_files "${files[@]}" || die "could not flush the renamed env files to disk"
+  as_root systemctl daemon-reload || die "systemctl daemon-reload failed after the env rename"
+}
+
+# The pre-flip hook (ARTIFACT_PREFLIP_HOOK): rename to the prefix RELEASE_DIR
+# reads, then render the units that release reads, right before the flip.
+migrate_env_prefix_host_for() { # RELEASE_DIR
+  local release=$1 t
+  t=$(core_release_env_prefix "${release}") || die "could not tell which env prefix ${release} reads"
+  migrate_env_prefix_host "${t}" "${release}"
+  install_core_units "${SCRIPT_DIR}/systemd" "${t}"
+  ensure_tau_api_memory_guardrail
+}
+
+# Flush the filesystem of each FILE (each touched filesystem once).
+_epr_sync_files() { # FILE...
+  local f seen=$'\n' d
+  for f in "$@"; do
+    d=$(dirname -- "${f}") || return 1
+    [[ ${seen} == *$'\n'"${d}"$'\n'* ]] && continue
+    seen+="${d}"$'\n'
+    _epr_sync "${f}" || return 1
+  done
+}
+
+# Remove the staging files an interrupted rename or restore left next to each
+# file of SETDIR's MANIFEST (.<name>.ficus-rename.* / .<name>.ficus-restore.*).
+_epr_clean_staging() { # SETDIR
+  local idx _sha path dir base f
+  [[ -f $1/MANIFEST ]] || return 0
+  while IFS=$'\t' read -r idx _sha path; do
+    [[ -n ${path} ]] || continue
+    dir=$(dirname -- "${path}") && base=$(basename -- "${path}") || continue
+    for f in "${dir}/.${base}.ficus-rename."* "${dir}/.${base}.ficus-restore."*; do
+      [[ -e ${f} ]] || continue
+      if rm -f -- "${f}"; then
+        log_info "removed ${f}, a staging file an interrupted run left behind"
+      fi
+    done
+  done <"$1/MANIFEST" || return 0
+}
+
+# The env prefix the ACTIVE release reads, into _EPR_ACTIVE (and its tree into
+# _EPR_ACTIVE_TREE). Returns 1 when it cannot be told.
+_epr_active_prefix() {
+  _EPR_ACTIVE='' _EPR_ACTIVE_TREE=''
+  _EPR_ACTIVE_TREE=$(active_release_tree) || return 1
+  _EPR_ACTIVE=$(core_release_env_prefix "${_EPR_ACTIVE_TREE}") || return 1
+  _epr_is_prefix "${_EPR_ACTIVE}"
+}
+
+# Finish SETDIR's rename forward — the active release reads FICUS_ — and
+# commit. Contained: on any failure it returns 1 with the journal kept, so the
+# next toolkit run's reconcile finishes the job.
+_env_prefix_finish_forward() { # SETDIR
+  local setdir=$1 no_units='' listing f
+  local -a files=()
+  _epr_clean_staging "${setdir}"
+  [[ -e ${setdir}/UNITS_EXCLUDED ]] && no_units=--no-units
+  # shellcheck disable=SC2086 # an empty ${no_units} must vanish, not pass ''
+  if ! (
+    _env_prefix_rename_files ${no_units} || exit 1
+    listing=$(host_env_files ${no_units}) || exit 1
+    while IFS= read -r f; do
+      [[ -n ${f} ]] && files+=("${f}")
+    done <<<"${listing}"
+    _epr_sync_files ${files[@]+"${files[@]}"} || exit 1
+    as_root systemctl daemon-reload || exit 1
+  ); then
+    return 1
+  fi
+  ENV_RENAME_BACKUP_SET=${setdir}
+  env_prefix_commit
+}
+
+# Make a journaled rename match the ACTIVE release (N-C1): restore the set
+# when the release that is serving reads TAU_, finish the rename file by file
+# and commit when it reads FICUS_. No journal: nothing to do. Returns 3 (the
+# journal kept) when this toolkit copy cannot finish the job here — the units
+# or tau-backup.sh template are not next to it.
+env_prefix_reconcile() {
+  local root raw line setdir target release rc=0
+  root=$(env_rename_backup_root)
+  if ! _epr_is_root; then
+    if [[ -e ${root}/PENDING ]]; then
+      die "an interrupted upgrade left an env rename journaled in ${root}/PENDING, and reconciling it is root-only (it restores or finishes root-owned env files) — re-run this as root"
+    fi
+    if [[ -d ${root} && ! -x ${root} ]]; then
+      log_warn "cannot look for a journaled env rename in ${root} as a non-root user; if an upgrade was interrupted, re-run this as root"
+    fi
+    return 0
+  fi
+  [[ -e ${root}/PENDING ]] || return 0
+  read_file_exact "${root}/PENDING" raw || die "could not read ${root}/PENDING"
+  line=${raw%%$'\n'*}
+  setdir=${line%%$'\t'*}
+  line=${line#*$'\t'}
+  target=${line%%$'\t'*}
+  release=${line#*$'\t'}
+  if [[ ${setdir} != "${root}/"* || ! -f ${setdir}/MANIFEST ]]; then
+    die "${root}/PENDING names '${setdir}', which is not a backup set under ${root} — inspect it by hand before re-running"
+  fi
+  _epr_active_prefix || die "could not tell which env prefix the active release (${_EPR_ACTIVE_TREE:-under ${SRC_DEST}}) reads"
+  log_warn "found a journaled env rename (set ${setdir}, target ${target}, release ${release:-<none>}) from an interrupted run; the active release ${_EPR_ACTIVE_TREE} reads ${_EPR_ACTIVE}_*"
+  if [[ ${_EPR_ACTIVE} == TAU ]]; then
+    env_rename_backup_restore "${setdir}" || rc=$?
+    case ${rc} in
+      0)
+        _epr_clean_staging "${setdir}"
+        log_info "reconcile: restored ${setdir} (the active release reads TAU_*)"
+        ;;
+      3) return 3 ;;
+      *) die "reconcile: restoring ${setdir} failed — the journal is kept; inspect ${setdir}/MANIFEST before re-running" ;;
+    esac
+    return 0
+  fi
+  if [[ -f ${BACKUP_SCRIPT_PATH} ]] && _epr_needs_rename "${BACKUP_SCRIPT_PATH}" backup_script &&
+    [[ ! -f ${SCRIPT_DIR}/tau-backup.sh.tmpl ]]; then
+    log_warn "reconcile: ${BACKUP_SCRIPT_PATH} still reads the pre-rename backup settings and tau-backup.sh.tmpl is not next to this script — leaving the rename journaled for the next upgrade"
+    return 3
+  fi
+  _env_prefix_finish_forward "${setdir}" ||
+    die "reconcile: finishing the rename journaled in ${setdir} failed — the journal is kept; re-run"
+  log_info "reconcile: finished the rename journaled in ${setdir} (the active release reads FICUS_*)"
+}
+
+# Settle THIS run's pending rename after a failure or a signal (Ruling 29): the
+# env files must end up matching the ACTIVE release. When the release serving
+# now reads TAU_ (the flip never happened, or was rolled back), the set is
+# restored; when it reads FICUS_ (the failure came after the flip, or there
+# was nothing to roll back to), the rename is finished forward and committed.
+# When that cannot be told, or either step fails, the journal is kept and the
+# next toolkit run's reconcile settles it. Runs once (the flag is cleared
+# first): the TERM trap runs it, and then the EXIT trap does again.
+env_prefix_settle_pending() {
+  local rc=0
+  [[ ${ENV_RENAME_PENDING:-0} -eq 1 ]] || return 0
+  ENV_RENAME_PENDING=0
+  if ! _epr_active_prefix; then
+    log_error "cannot tell which env prefix the active release reads — $(env_rename_backup_root)/PENDING is kept, and the next toolkit run reconciles it"
+    return 1
+  fi
+  if [[ ${_EPR_ACTIVE} == TAU ]]; then
+    log_warn "restoring this host's env files from ${ENV_RENAME_BACKUP_SET} (the run that renamed them did not complete, and the active release reads TAU_*)"
+    env_rename_backup_restore "${ENV_RENAME_BACKUP_SET}" || rc=$?
+    if [[ ${rc} -ne 0 ]]; then
+      log_error "the env restore from ${ENV_RENAME_BACKUP_SET} did not complete (rc ${rc}) — $(env_rename_backup_root)/PENDING is kept, and the next toolkit run reconciles it"
+    fi
+    return "${rc}"
+  fi
+  log_warn "the active release ${_EPR_ACTIVE_TREE} reads FICUS_*: keeping this host's renamed env files and committing the rename (set ${ENV_RENAME_BACKUP_SET})"
+  if ! _env_prefix_finish_forward "${ENV_RENAME_BACKUP_SET}"; then
+    log_error "finishing the env rename forward did not complete — $(env_rename_backup_root)/PENDING is kept, and the next toolkit run reconciles it"
+    return 1
+  fi
+}
+
+# artifact_activate's rollback hook: it runs after the symlinks are swapped
+# back, so the active release is the old one again and this restores.
+env_prefix_restore_pending() {
+  env_prefix_settle_pending
+}
+
+# The EXIT/TERM/HUP/INT trap body: settle on any failed or signalled exit.
+# Idempotent — a TERM trap runs it, and then the EXIT trap does again.
+env_prefix_on_exit() { # RC
+  [[ ${1:-0} -ne 0 ]] || return 0
+  env_prefix_settle_pending || true
+}
+
+# The renamed files are now what the serving release reads: forget the
+# journal and prune old sets.
+env_prefix_commit() {
+  local root pending
+  ENV_RENAME_PENDING=0
+  root=$(env_rename_backup_root)
+  pending=$(_epr_pending_set) || pending=''
+  if [[ -n ${pending} && (-z ${ENV_RENAME_BACKUP_SET} || ${pending} == "${ENV_RENAME_BACKUP_SET}") ]]; then
+    rm -f -- "${root}/PENDING" || log_warn "could not remove ${root}/PENDING — the next toolkit run will reconcile it (a no-op)"
+  fi
+  env_rename_backup_prune || log_warn "could not prune old env backup sets under ${root}"
+}
+
+# The one EXIT trap body for the toolkit's entrypoints: the artifact pubkey
+# temp file, the git askpass helper, then the env restore on a failed exit.
+toolkit_exit_trap() { # RC
+  local rc=${1:-0}
+  if [[ -n ${ARTIFACT_PUBKEY_FILE:-} ]]; then rm -f -- "${ARTIFACT_PUBKEY_FILE}"; fi
+  cleanup_git_askpass
+  env_prefix_on_exit "${rc}"
+}
+
+# Install the traps (N-C1). Bash runs an EXIT trap with $?=0 when a signal
+# ends the script, so the signals get their own traps with the conventional
+# 128+N status, which the EXIT trap then sees too (a no-op the second time).
+env_prefix_install_traps() {
+  TOOLKIT_EXIT_TRAP_INSTALLED=1
+  # A dropped SSH session closes the pipes the log lines go to. Without this
+  # the next write kills the script with an untrapped SIGPIPE — before any
+  # trap could settle a pending rename. Ignored, the write just fails (the
+  # log_* helpers tolerate that) and the run ends through its own checks.
+  trap '' PIPE
+  trap 'toolkit_exit_trap $?' EXIT
+  trap 'env_prefix_on_exit 143; exit 143' TERM
+  trap 'env_prefix_on_exit 129; exit 129' HUP
+  trap 'env_prefix_on_exit 130; exit 130' INT
+}
+
+# Serialize the toolkit runs that can rename, restore or reconcile a host's
+# env files: an exclusive flock on ${ENV_RENAME_BACKUP_ROOT}/.lock, held on
+# fd 9 until this process (and its children) exit. Waits up to
+# ENV_RENAME_LOCK_WAIT seconds (default 900) for another run, then dies.
+env_prefix_lock() {
+  local root
+  root=$(env_rename_backup_root)
+  if ! _epr_is_root; then
+    log_warn "not running as root: the env-rename lock is not taken — this run goes on only while this host needs no env rename, restore or reconcile (those are root-only)"
+    return 0
+  fi
+  if ! have flock; then
+    log_warn "flock is not installed — toolkit runs on this host are not serialized"
+    return 0
+  fi
+  if ! mkdir -p -- "${root}" || ! chmod 0700 "${root}"; then
+    die "could not create ${root} (root 0700)"
+  fi
+  exec 9>>"${root}/.lock" || die "could not open ${root}/.lock"
+  flock -w "${ENV_RENAME_LOCK_WAIT:-900}" 9 ||
+    die "another toolkit run on this host holds ${root}/.lock (an upgrade, setup or artifact sync) — wait for it to finish and re-run"
+}
+
+# Controller Ruling 30: refuse, early and with the reason, a NON-ROOT run that
+# would have to rename this host's settings to TARGET. Ruling 31: fail closed
+# — a host env file this user cannot read (or cannot even tell exists,
+# behind a directory it cannot search or list) might need the rename, so it
+# refuses too, naming the path and never reading anything from it. A root
+# run, a TAU target, or every file readable with nothing to rename: 0.
+require_env_rename_privilege() { # TARGET
+  local listing f kind anc
+  _epr_is_root && return 0
+  [[ $1 == FICUS ]] || return 0
+  listing=$(_host_env_candidates) || die "could not list this host's env files"
+  while IFS= read -r f; do
+    [[ -n ${f} ]] || continue
+    if [[ -e ${f} ]]; then
+      [[ -r ${f} ]] ||
+        die "cannot read ${f} as $(id -un) (uid ${EUID}), so this non-root run cannot tell whether it still uses TAU_ names the Ficus Core release needs renamed (the rename is root-only) — re-run this as root"
+      continue
+    fi
+    # Absent, or hidden: walk up to the nearest ancestor that is visible.
+    anc=$(dirname -- "${f}")
+    while [[ ! -e ${anc} && ${anc} != / && ${anc} != . ]]; do
+      anc=$(dirname -- "${anc}")
+    done
+    if [[ -d ${anc} && ! -x ${anc} ]] || { [[ ${f} == *'*'* && ${anc} == "$(dirname -- "${f}")" && -d ${anc} && ! -r ${anc} ]]; }; then
+      die "cannot tell whether ${f} exists: ${anc} cannot be searched (or listed) by $(id -un) (uid ${EUID}), so this non-root run cannot check it for TAU_ names the Ficus Core release needs renamed (the rename is root-only) — re-run this as root"
+    fi
+  done <<<"${listing}"
+  listing=$(host_env_files) || die "could not list this host's env files"
+  while IFS= read -r f; do
+    [[ -n ${f} && -r ${f} ]] || continue
+    kind=dotenv
+    [[ ${f} == "$(readlink -f -- "${CFG_FILE:-/nonexistent}" 2>/dev/null)" ]] && kind=yaml
+    [[ ${f} == *.service || ${f} == *.conf ]] && kind=unit
+    [[ ${f} == "$(readlink -f -- "${BACKUP_SCRIPT_PATH}" 2>/dev/null)" ]] && kind=backup_script
+    if _epr_needs_rename "${f}" "${kind}"; then
+      die "this host's settings must be renamed TAU_* -> FICUS_* for the Ficus Core release (${f} still uses TAU_ names), and the rename is root-only (it backs up and rewrites root-owned env files and units) — re-run this as root"
+    fi
+  done <<<"${listing}"
+  return 0
+}
+
+# Refuse to run a FICUS_-only primitive on a host that was never renamed
+# (or the reverse) — its .env, and the release it serves when that can be
+# told — or whose rename is still journaled from an interrupted upgrade.
+# Dies before any write.
+require_host_env_prefix() { # WANT [ENV_FILE]
+  local want=$1 file=${2:-${SRC_DEST}/.env} got tree release=NONE
+  got=$(host_env_prefix "${file}")
+  [[ ${got} == "${want}" ]] ||
+    die "this host still uses TAU_* settings — upgrade it to the Ficus Core release first (retarget/move jobs are refused on unmigrated hosts) [${file}: ${got}]"
+  [[ ! -e $(env_rename_backup_root)/PENDING ]] ||
+    die "an interrupted upgrade left an env rename journaled in $(env_rename_backup_root)/PENDING — run the tenant upgrade (it reconciles) before retargeting"
+  # The active release, when this host has one this toolkit can read (an
+  # unknown one cannot disagree — the control plane's probe rule).
+  if [[ -n ${SRC_DEST:-} ]]; then
+    tree=$(active_release_tree) || tree=''
+    if [[ -n ${tree} && (-f ${tree}/artifact.json || -f ${tree}/package.json) ]]; then
+      release=$(core_release_env_prefix "${tree}") || die "could not tell which env prefix ${tree} reads"
+    fi
+  fi
+  [[ ${release} == NONE || ${release} == "${want}" ]] ||
+    die "this host's active release (${tree}) reads ${release}_* settings — upgrade it to the Ficus Core release first (retarget/move jobs are refused on unmigrated hosts)"
+}
+
 # ------------------------------------------------------------------ CI publisher (tau-ci)
 #
 # GitHub Actions publishes the CLI release assets onto the control-plane host
@@ -3241,13 +4809,14 @@ artifact_retention() { # DEST
 # directory and NOTHING else — not the platform checkout, not the env file,
 # not the TLS key, not the Caddyfile.
 
-# Candidate rrsync locations, plus a TAU_SETUP_RRSYNC override for hosts where
+# Candidate rrsync locations, plus a FICUS_SETUP_RRSYNC (until phase 5 also
+# TAU_SETUP_RRSYNC, which setup-platform.sh still sets) override for hosts where
 # it lives somewhere else. rrsync ships with rsync but has moved between
 # releases and is not on PATH on Ubuntu 24.04. Prints the path, or nothing
 # when it cannot be found.
 detect_rrsync() {
-  if [[ -n ${TAU_SETUP_RRSYNC:-} ]]; then
-    printf '%s' "${TAU_SETUP_RRSYNC}"
+  if [[ -n ${FICUS_SETUP_RRSYNC:-${TAU_SETUP_RRSYNC:-}} ]]; then
+    printf '%s' "${FICUS_SETUP_RRSYNC:-${TAU_SETUP_RRSYNC:-}}"
     return 0
   fi
   local c
@@ -3334,7 +4903,7 @@ wizard_write_config() { # OUT_FILE
   prompt_value "database (container = local ParadeDB in docker | external) [container]" db_mode
   db_mode=${db_mode:-container}
   if [[ ${db_mode} == external ]]; then
-    log_info "external DSN: prefer supplying it via TAU_SETUP_DATABASE_DSN at run time"
+    log_info "external DSN: prefer supplying it via FICUS_SETUP_DATABASE_DSN at run time"
     prompt_value "postgres DSN (blank to supply via env)" db_dsn
   elif [[ ${db_mode} != container ]]; then
     die "database mode must be container or external"
@@ -3342,7 +4911,7 @@ wizard_write_config() { # OUT_FILE
 
   local sandbox='' exe_key='' exe_image='ghcr.io/ficushq/ficus-machine:latest'
   # The sandbox runtime has NO default: the core refuses to start without an
-  # explicit TAU_SANDBOX_RUNTIME, so the wizard must make the operator choose.
+  # explicit FICUS_SANDBOX_RUNTIME, so the wizard must make the operator choose.
   # Bounded retries — an EOF on stdin returns an empty answer forever, and an
   # unbounded loop would spin instead of failing.
   local sandbox_try

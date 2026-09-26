@@ -10,7 +10,7 @@
 # verification — records its argv and the curl --config it was handed, and
 # answers with a chosen HTTP status or exit code), systemctl (records; must
 # never be called), and mv/chmod/chown/mktemp/cat/cp/yq (pass through to the
-# real binary unless a TAU_TEST_* switch tells one to fail a specific call).
+# real binary unless a FICUS_TEST_* switch tells one to fail a specific call).
 #
 # The mutation section needs the WHOLE test process to be real root
 # (retarget-backup.sh has no sudo fallback), so it self-skips outside CI's
@@ -88,8 +88,8 @@ REAL_MV=$(real mv) REAL_CHMOD=$(real chmod) REAL_CHOWN=$(real chown) REAL_MKTEMP
 REAL_CAT=$(real cat) REAL_CP=$(real cp) REAL_YQ=$(real yq) REAL_HEAD=$(real head)
 
 # curl: record argv, copy out the --config it was handed (proves the key
-# travelled there and not on argv), then answer with TAU_TEST_S3_STATUS
-# (default 200) as %{http_code}, or fail with exit TAU_TEST_CURL_EXIT.
+# travelled there and not on argv), then answer with FICUS_TEST_S3_STATUS
+# (default 200) as %{http_code}, or fail with exit FICUS_TEST_CURL_EXIT.
 cat >"${SHIM_DIR}/curl" <<SHIM
 #!/usr/bin/env bash
 printf 'curl %s\n' "\$*" >>"${SHIM_LOG}"
@@ -98,11 +98,11 @@ for a in "\$@"; do
   [[ \${prev} == --config ]] && ${REAL_CAT} "\${a}" >"${CURL_CONFIG_SEEN}"
   prev=\${a}
 done
-if [[ -n \${TAU_TEST_CURL_EXIT:-} ]]; then
-  printf 'curl: (%s) Failed to connect (test shim)\n' "\${TAU_TEST_CURL_EXIT}" >&2
-  exit "\${TAU_TEST_CURL_EXIT}"
+if [[ -n \${FICUS_TEST_CURL_EXIT:-} ]]; then
+  printf 'curl: (%s) Failed to connect (test shim)\n' "\${FICUS_TEST_CURL_EXIT}" >&2
+  exit "\${FICUS_TEST_CURL_EXIT}"
 fi
-printf '%s' "\${TAU_TEST_S3_STATUS:-200}"
+printf '%s' "\${FICUS_TEST_S3_STATUS:-200}"
 SHIM
 
 cat >"${SHIM_DIR}/systemctl" <<SHIM
@@ -111,49 +111,49 @@ printf 'systemctl %s\n' "\$*" >>"${SHIM_LOG}"
 exit 0
 SHIM
 
-# mv: TAU_TEST_FAIL_MV="backup.env:1 tau-backup.sh:2" fails the 1st rename
+# mv: FICUS_TEST_FAIL_MV="backup.env:1 tau-backup.sh:2" fails the 1st rename
 # onto a file named backup.env and the 2nd onto one named tau-backup.sh.
 cat >"${SHIM_DIR}/mv" <<SHIM
 #!/usr/bin/env bash
 dest=\$(basename -- "\${@: -1}")
 n=\$(( \$(${REAL_CAT} "${MV_COUNT_DIR}/\${dest}" 2>/dev/null || echo 0) + 1 ))
 printf '%s' "\${n}" >"${MV_COUNT_DIR}/\${dest}"
-for rule in \${TAU_TEST_FAIL_MV:-}; do
+for rule in \${FICUS_TEST_FAIL_MV:-}; do
   [[ \${rule} == "\${dest}:\${n}" ]] && exit 1
 done
-# TAU_TEST_HUP_ON_MV=<dest basename>: SIGHUP the calling script first (a
+# FICUS_TEST_HUP_ON_MV=<dest basename>: SIGHUP the calling script first (a
 # dropped SSH session mid-swap), then do the rename anyway.
-[[ -n \${TAU_TEST_HUP_ON_MV:-} && \${dest} == "\${TAU_TEST_HUP_ON_MV}" ]] && kill -HUP "\${PPID}"
+[[ -n \${FICUS_TEST_HUP_ON_MV:-} && \${dest} == "\${FICUS_TEST_HUP_ON_MV}" ]] && kill -HUP "\${PPID}"
 exec ${REAL_MV} "\$@"
 SHIM
 
 # chmod/chown/mktemp/cp: fail any call with an argument containing the
-# TAU_TEST_FAIL_<CMD> substring.
+# FICUS_TEST_FAIL_<CMD> substring.
 for cmd in chmod chown mktemp cp; do
   upper=$(printf '%s' "${cmd}" | tr '[:lower:]' '[:upper:]')
   real_var="REAL_${upper}"
   cat >"${SHIM_DIR}/${cmd}" <<SHIM
 #!/usr/bin/env bash
-if [[ -n \${TAU_TEST_FAIL_${upper}:-} ]]; then
+if [[ -n \${FICUS_TEST_FAIL_${upper}:-} ]]; then
   for a in "\$@"; do
-    [[ \${a} == *"\${TAU_TEST_FAIL_${upper}}"* ]] && exit 1
+    [[ \${a} == *"\${FICUS_TEST_FAIL_${upper}}"* ]] && exit 1
   done
 fi
 exec ${!real_var} "\$@"
 SHIM
 done
 
-# cat: TAU_TEST_CAT_SHORT=<path> returns only its first line, exit 0 (a
-# silently short read); TAU_TEST_CAT_FAIL=<path> returns its first line and
+# cat: FICUS_TEST_CAT_SHORT=<path> returns only its first line, exit 0 (a
+# silently short read); FICUS_TEST_CAT_FAIL=<path> returns its first line and
 # exits 1 (a read error partway).
 cat >"${SHIM_DIR}/cat" <<SHIM
 #!/usr/bin/env bash
 for a in "\$@"; do
-  if [[ -n \${TAU_TEST_CAT_SHORT:-} && \${a} == "\${TAU_TEST_CAT_SHORT}" ]]; then
+  if [[ -n \${FICUS_TEST_CAT_SHORT:-} && \${a} == "\${FICUS_TEST_CAT_SHORT}" ]]; then
     ${REAL_HEAD} -n 1 "\${a}"
     exit 0
   fi
-  if [[ -n \${TAU_TEST_CAT_FAIL:-} && \${a} == "\${TAU_TEST_CAT_FAIL}" ]]; then
+  if [[ -n \${FICUS_TEST_CAT_FAIL:-} && \${a} == "\${FICUS_TEST_CAT_FAIL}" ]]; then
     ${REAL_HEAD} -n 1 "\${a}"
     exit 1
   fi
@@ -161,18 +161,18 @@ done
 exec ${REAL_CAT} "\$@"
 SHIM
 
-# yq: TAU_TEST_FAIL_YQ_WRITE=1 fails any in-place write (yq -i);
-# TAU_TEST_FAIL_YQ_READ=<substring> fails any call with an argument
-# containing it; TAU_TEST_HUP_ON_YQ_WRITE=1 sends SIGHUP to the script's MAIN
+# yq: FICUS_TEST_FAIL_YQ_WRITE=1 fails any in-place write (yq -i);
+# FICUS_TEST_FAIL_YQ_READ=<substring> fails any call with an argument
+# containing it; FICUS_TEST_HUP_ON_YQ_WRITE=1 sends SIGHUP to the script's MAIN
 # shell (the yq -i calls run inside a ( … ) subshell, so that is the
 # grandparent — Linux /proc) before an in-place write.
 cat >"${SHIM_DIR}/yq" <<SHIM
 #!/usr/bin/env bash
 for a in "\$@"; do
-  [[ -n \${TAU_TEST_FAIL_YQ_READ:-} && \${a} == *"\${TAU_TEST_FAIL_YQ_READ}"* ]] && exit 1
+  [[ -n \${FICUS_TEST_FAIL_YQ_READ:-} && \${a} == *"\${FICUS_TEST_FAIL_YQ_READ}"* ]] && exit 1
   if [[ \${a} == -i ]]; then
-    [[ -n \${TAU_TEST_FAIL_YQ_WRITE:-} ]] && exit 1
-    if [[ -n \${TAU_TEST_HUP_ON_YQ_WRITE:-} ]]; then
+    [[ -n \${FICUS_TEST_FAIL_YQ_WRITE:-} ]] && exit 1
+    if [[ -n \${FICUS_TEST_HUP_ON_YQ_WRITE:-} ]]; then
       gp=\$(awk '{print \$4}' "/proc/\${PPID}/stat")
       kill -HUP "\${gp}"
     fi
@@ -188,13 +188,13 @@ export PATH="${SHIM_DIR}:${PATH}"
 # BUILTIN writing through a redirect. BASH_ENV runs this file in the script's
 # own shell before anything else, shadowing printf with a function that
 # fails ONLY when its stdout is a file whose path contains
-# TAU_TEST_FAIL_WRITE (Linux /proc; the root section only runs there).
+# FICUS_TEST_FAIL_WRITE (Linux /proc; the root section only runs there).
 FAIL_WRITE_ENV="${SCRATCH}/fail-write.bash"
 cat >"${FAIL_WRITE_ENV}" <<'EOF'
 printf() {
   local me=${BASHPID} target
   target=$(readlink "/proc/${me}/fd/1" 2>/dev/null) || target=''
-  [[ -n ${TAU_TEST_FAIL_WRITE:-} && ${target} == *"${TAU_TEST_FAIL_WRITE}"* ]] && return 1
+  [[ -n ${FICUS_TEST_FAIL_WRITE:-} && ${target} == *"${FICUS_TEST_FAIL_WRITE}"* ]] && return 1
   # shellcheck disable=SC2059 # pass-through: forwards the caller's own format
   builtin printf "$@"
 }
@@ -243,17 +243,22 @@ backup:
   s3_prefix: ${PREFIX}
   s3_access_key_env: PLATFORM_BACKUP_S3_ACCESS_KEY
   s3_secret_key_env: PLATFORM_BACKUP_S3_SECRET_KEY
-  passphrase_env: TAU_BACKUP_PASSPHRASE
+  passphrase_env: FICUS_BACKUP_PASSPHRASE
   schedule: '03:15'
 EOF
+
+# The host's core .env, renamed to FICUS_* (the Ficus rename): retarget-backup.sh
+# reads and writes FICUS_ names only and refuses a host still on TAU_ ones.
+CORE_ENV="${SCRATCH}/core/.env"
+printf 'FICUS_ENCRYPTION_KEY=k\nFICUS_SANDBOX_RUNTIME=host\n' >"${CORE_ENV}"
 
 SECRETS="${SCRATCH}/secrets.env"
 write_secrets() { # ACCESS SECRET — always a fresh file (owner = this user)
   rm -f "${SECRETS}"
   {
     printf '# pushed by the control plane\n'
-    printf 'TAU_BACKUP_S3_ACCESS_KEY=%s\n' "$(lib sh_single_quote "$1")"
-    printf 'TAU_BACKUP_S3_SECRET_KEY=%s\n' "$(lib sh_single_quote "$2")"
+    printf 'FICUS_BACKUP_S3_ACCESS_KEY=%s\n' "$(lib sh_single_quote "$1")"
+    printf 'FICUS_BACKUP_S3_SECRET_KEY=%s\n' "$(lib sh_single_quote "$2")"
   } >"${SECRETS}"
   chmod 600 "${SECRETS}"
 }
@@ -305,6 +310,27 @@ run() { # ...ARGS — sets RC and OUT (stdout+stderr)
 reset_fixture
 
 # =============================================================================
+# a host that was never renamed (Ficus): refused before anything is written
+# =============================================================================
+# All three live files get an old mtime first, so any write — even one that
+# rewrote the same bytes — would show.
+printf 'TAU_ENCRYPTION_KEY=k\nTAU_SANDBOX_RUNTIME=host\n' >"${CORE_ENV}" # legacy-env
+touch -d '2001-01-01 00:00:00' "${BACKUP_SCRIPT_PATH}" "${BACKUP_ENV_TARGET}" "${CONFIG}"
+mtimes() { stat -c %Y "${BACKUP_SCRIPT_PATH}" "${BACKUP_ENV_TARGET}" "${CONFIG}" 2>/dev/null || stat -f %m "${BACKUP_SCRIPT_PATH}" "${BACKUP_ENV_TARGET}" "${CONFIG}"; }
+before_mtimes=$(mtimes)
+for mode in real --dry-run; do
+  if [[ ${mode} == real ]]; then run "${ARGS[@]}"; else run "${ARGS[@]}" --dry-run; fi
+  expect_eq "TAU host (${mode}): exits 1" "${RC}" 1
+  expect_contains "TAU host (${mode}): says why" "${OUT}" 'this host still uses TAU_* settings — upgrade it to the Ficus Core release first'
+  expect_eq "TAU host (${mode}): no file was written (mtimes unchanged)" "$(mtimes)" "${before_mtimes}"
+  expect_not_contains "TAU host (${mode}): prints no RESULT marker" "${OUT}" 'FICUS_RETARGET_BACKUP_RESULT='
+  expect_eq "TAU host (${mode}): the S3 check never ran" "$(grep -c '^curl ' "${SHIM_LOG}" || true)" 0
+done
+assert_untouched 'TAU host'
+printf 'FICUS_ENCRYPTION_KEY=k\nFICUS_SANDBOX_RUNTIME=host\n' >"${CORE_ENV}"
+reset_fixture
+
+# =============================================================================
 # --dry-run (any user)
 # =============================================================================
 run "${ARGS[@]}" --dry-run
@@ -315,19 +341,25 @@ expect_contains '--dry-run shows the new target, prefix unchanged' "${OUT}" "end
 expect_contains '--dry-run plans the verification' "${OUT}" "ListObjectsV2 (max-keys=1, read-only) of s3://${NEW_BUCKET}/${PREFIX}/ at ${NEW_ENDPOINT}"
 expect_contains '--dry-run diffs the old bucket out of tau-backup.sh' "${OUT}" "  | -S3_BUCKET='${OLD_BUCKET}'"
 expect_contains '--dry-run diffs the new bucket into tau-backup.sh' "${OUT}" "  | +S3_BUCKET='${NEW_BUCKET}'"
-expect_contains '--dry-run shows the access key redacted' "${OUT}" "TAU_BACKUP_S3_ACCESS_KEY=DO00… (20 chars, redacted)"
-expect_contains '--dry-run masks the secret key completely' "${OUT}" 'TAU_BACKUP_S3_SECRET_KEY=<redacted>'
-expect_contains '--dry-run keeps the passphrase' "${OUT}" 'TAU_BACKUP_PASSPHRASE=<unchanged, redacted>'
+expect_contains '--dry-run shows the access key redacted' "${OUT}" "FICUS_BACKUP_S3_ACCESS_KEY=DO00… (20 chars, redacted)"
+expect_contains '--dry-run masks the secret key completely' "${OUT}" 'FICUS_BACKUP_S3_SECRET_KEY=<redacted>'
+expect_contains '--dry-run keeps the passphrase' "${OUT}" 'FICUS_BACKUP_PASSPHRASE=<unchanged, redacted>'
 expect_contains '--dry-run plans the yaml endpoint' "${OUT}" "backup.s3_endpoint: ${NEW_ENDPOINT} (was ${OLD_ENDPOINT})"
 expect_contains '--dry-run plans the yaml bucket' "${OUT}" "backup.s3_bucket: ${NEW_BUCKET} (was ${OLD_BUCKET})"
 expect_contains '--dry-run names what stays untouched' "${OUT}" 'tau-backup.timer / tau-backup.service (schedule)'
 assert_no_secrets '--dry-run' "${OUT}"
 dry_stdout=$("${RETARGET}" "${ARGS[@]}" --dry-run 2>/dev/null)
+# Each marker on its own line, each findable by its own full name (the
+# multi-marker printf used to hide the last two behind `\n`).
+for marker in ENDPOINT REGION BUCKET; do
+  expect_eq "--dry-run emits FICUS_RETARGET_BACKUP_${marker}= on its own line" \
+    "$(grep -c "^FICUS_RETARGET_BACKUP_${marker}=" <<<"${dry_stdout}")" '1'
+done
 expect_eq '--dry-run ends stdout with the result markers' "$(tail -n 4 <<<"${dry_stdout}")" \
-  "TAU_RETARGET_BACKUP_RESULT=dry-run
-TAU_RETARGET_BACKUP_ENDPOINT=${NEW_ENDPOINT}
-TAU_RETARGET_BACKUP_REGION=${NEW_REGION}
-TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
+  "FICUS_RETARGET_BACKUP_RESULT=dry-run
+FICUS_RETARGET_BACKUP_ENDPOINT=${NEW_ENDPOINT}
+FICUS_RETARGET_BACKUP_REGION=${NEW_REGION}
+FICUS_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
 assert_untouched '--dry-run'
 expect_eq '--dry-run creates no backups' "$(backup_count)" 0
 expect_eq '--dry-run never contacts S3 (no curl call)' "$(grep -c '^curl ' "${SHIM_LOG}" || true)" 0
@@ -339,7 +371,7 @@ expect_eq '--dry-run is idempotent: twice prints the same plan' "$(strip_ts <<<"
 
 run --config "${CONFIG}" --secrets "${SECRETS}" --bucket "${NEW_BUCKET}" --endpoint "${NEW_ENDPOINT}" --dry-run
 expect_eq '--dry-run without --region exits zero' "${RC}" 0
-expect_contains 'without --region, the live region is kept' "${OUT}" "TAU_RETARGET_BACKUP_REGION=${OLD_REGION}"
+expect_contains 'without --region, the live region is kept' "${OUT}" "FICUS_RETARGET_BACKUP_REGION=${OLD_REGION}"
 
 # =============================================================================
 # validation failures: exit 1 with a clear message, nothing touched
@@ -394,20 +426,20 @@ secrets_case() { # LABEL MESSAGE CONTENT
   assert_untouched "$1"
 }
 secrets_case 'secrets file that tries to change the passphrase' 'line 3: unexpected key' \
-  "TAU_BACKUP_S3_ACCESS_KEY=${NEW_AK}
-TAU_BACKUP_S3_SECRET_KEY='${OLD_SK}'
-TAU_BACKUP_PASSPHRASE='${OLD_SK}'
+  "FICUS_BACKUP_S3_ACCESS_KEY=${NEW_AK}
+FICUS_BACKUP_S3_SECRET_KEY='${OLD_SK}'
+FICUS_BACKUP_PASSPHRASE='${OLD_SK}'
 "
-secrets_case 'secrets file without the secret key' 'does not set TAU_BACKUP_S3_SECRET_KEY' \
-  "TAU_BACKUP_S3_ACCESS_KEY=${NEW_AK}
+secrets_case 'secrets file without the secret key' 'does not set FICUS_BACKUP_S3_SECRET_KEY' \
+  "FICUS_BACKUP_S3_ACCESS_KEY=${NEW_AK}
 "
 secrets_case 'secrets file with a double-quoted (shell-evaluated) value' 'is not a bare word or a single-quoted string' \
-  "TAU_BACKUP_S3_ACCESS_KEY=${NEW_AK}
-TAU_BACKUP_S3_SECRET_KEY=\"${OLD_SK}\"
+  "FICUS_BACKUP_S3_ACCESS_KEY=${NEW_AK}
+FICUS_BACKUP_S3_SECRET_KEY=\"${OLD_SK}\"
 "
 secrets_case 'secrets file with a non-assignment line' 'line 2 is not a KEY=VALUE assignment' \
-  "TAU_BACKUP_S3_ACCESS_KEY=${NEW_AK}
-export TAU_BACKUP_S3_SECRET_KEY='${OLD_SK}'
+  "FICUS_BACKUP_S3_ACCESS_KEY=${NEW_AK}
+export FICUS_BACKUP_S3_SECRET_KEY='${OLD_SK}'
 "
 write_secrets "${NEW_AK}" "${NEW_SK}"
 
@@ -415,7 +447,7 @@ write_secrets "${NEW_AK}" "${NEW_SK}"
 yq -i '.backup.enabled = false' "${CONFIG}"
 run "${ARGS[@]}"
 expect_eq 'backup.enabled false: exits 3 (not applicable)' "${RC}" 3
-expect_contains 'backup.enabled false: says so' "${OUT}" 'TAU_RETARGET_BACKUP_RESULT=not-applicable'
+expect_contains 'backup.enabled false: says so' "${OUT}" 'FICUS_RETARGET_BACKUP_RESULT=not-applicable'
 cp "${PRISTINE}/tau-setup.yaml" "${CONFIG}"
 assert_untouched 'backup.enabled false'
 
@@ -427,13 +459,13 @@ enabled_fails() { # LABEL [ENV_ASSIGNMENT]
   RC=0
   OUT=$(env "$@" "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
   expect_eq "${label}: exits 1, not 3" "${RC}" 1
-  expect_not_contains "${label}: prints no RESULT marker" "${OUT}" 'TAU_RETARGET_BACKUP_RESULT='
+  expect_not_contains "${label}: prints no RESULT marker" "${OUT}" 'FICUS_RETARGET_BACKUP_RESULT='
   expect_contains "${label}: says it could not read backup.enabled" "${OUT}" 'could not read backup.enabled'
 }
 yq -i '.backup.enabled = "maybe"' "${CONFIG}"
 enabled_fails 'backup.enabled: maybe'
 cp "${PRISTINE}/tau-setup.yaml" "${CONFIG}"
-enabled_fails 'a yq failure reading backup.enabled' TAU_TEST_FAIL_YQ_READ=.backup.enabled
+enabled_fails 'a yq failure reading backup.enabled' FICUS_TEST_FAIL_YQ_READ=.backup.enabled
 assert_untouched 'unreadable backup.enabled'
 expect_eq 'unreadable backup.enabled: backs nothing up' "$(backup_count)" 0
 
@@ -473,21 +505,21 @@ live_env_case() { # LABEL MESSAGE CONTENT
   expect_run_fails "$1" "$2" "${ARGS[@]}" --dry-run
   cp "${PRISTINE}/backup.env" "${BACKUP_ENV_TARGET}"
 }
-live_env_case 'backup.env without a passphrase' 'has no TAU_BACKUP_PASSPHRASE' \
-  "TAU_BACKUP_S3_ACCESS_KEY='${OLD_AK}'
-TAU_BACKUP_S3_SECRET_KEY='${OLD_SK}'
+live_env_case 'backup.env without a passphrase' 'has no FICUS_BACKUP_PASSPHRASE' \
+  "FICUS_BACKUP_S3_ACCESS_KEY='${OLD_AK}'
+FICUS_BACKUP_S3_SECRET_KEY='${OLD_SK}'
 "
 live_env_case 'backup.env with a key re-rendering would drop' 'line 8: unexpected key' \
   "$(cat "${PRISTINE}/backup.env")
 EXTRA_THING='keep me'
 "
 live_env_case 'backup.env with a double-quoted passphrase' 'not in the format setup-host.sh writes' \
-  "TAU_BACKUP_S3_ACCESS_KEY='${OLD_AK}'
-TAU_BACKUP_S3_SECRET_KEY='${OLD_SK}'
-TAU_BACKUP_PASSPHRASE=\"${OLD_SK}\"
+  "FICUS_BACKUP_S3_ACCESS_KEY='${OLD_AK}'
+FICUS_BACKUP_S3_SECRET_KEY='${OLD_SK}'
+FICUS_BACKUP_PASSPHRASE=\"${OLD_SK}\"
 "
 # A bare (unquoted) value is accepted and carried over with its VALUE intact.
-printf "TAU_BACKUP_S3_ACCESS_KEY=%s\nTAU_BACKUP_S3_SECRET_KEY=%s\nTAU_BACKUP_PASSPHRASE=bare-passphrase-123\n" "${OLD_AK}" old >"${BACKUP_ENV_TARGET}"
+printf "FICUS_BACKUP_S3_ACCESS_KEY=%s\nFICUS_BACKUP_S3_SECRET_KEY=%s\nFICUS_BACKUP_PASSPHRASE=bare-passphrase-123\n" "${OLD_AK}" old >"${BACKUP_ENV_TARGET}"
 run "${ARGS[@]}" --dry-run
 expect_eq 'backup.env with bare values: accepted' "${RC}" 0
 cp "${PRISTINE}/backup.env" "${BACKUP_ENV_TARGET}"
@@ -515,10 +547,10 @@ expect_contains 'no tau-backup.sh.tmpl next to the script: names it' "${out}" 't
 
 # Read-side injection (dry-run reaches every read): a silently short read of
 # the live backup.env, and a read error on the secrets file, must refuse.
-TAU_TEST_CAT_SHORT="${BACKUP_ENV_TARGET}" run "${ARGS[@]}" --dry-run
+FICUS_TEST_CAT_SHORT="${BACKUP_ENV_TARGET}" run "${ARGS[@]}" --dry-run
 expect_eq 'short read of backup.env (dry-run): exits 1' "${RC}" 1
 expect_contains 'short read of backup.env (dry-run): says so' "${OUT}" "read of ${BACKUP_ENV_TARGET} came up short"
-TAU_TEST_CAT_FAIL="${SECRETS}" run "${ARGS[@]}" --dry-run
+FICUS_TEST_CAT_FAIL="${SECRETS}" run "${ARGS[@]}" --dry-run
 expect_eq 'read error on the secrets file (dry-run): exits 1' "${RC}" 1
 expect_contains 'read error on the secrets file (dry-run): says so' "${OUT}" "could not read --secrets file"
 assert_untouched 'after the validation cases'
@@ -559,11 +591,11 @@ if [[ ${EUID} -eq 0 ]]; then
     expect_eq "${label}: tau-backup.sh differs from the old one in exactly the three S3 lines" \
       "$(diff "${PRISTINE}/tau-backup.sh" "${BACKUP_SCRIPT_PATH}" | grep -c '^[<>]' || true)" 6
     expect_eq "${label}: the passphrase line is byte-identical to before" \
-      "$(grep '^TAU_BACKUP_PASSPHRASE=' "${BACKUP_ENV_TARGET}")" "$(grep '^TAU_BACKUP_PASSPHRASE=' "${PRISTINE}/backup.env")"
+      "$(grep '^FICUS_BACKUP_PASSPHRASE=' "${BACKUP_ENV_TARGET}")" "$(grep '^FICUS_BACKUP_PASSPHRASE=' "${PRISTINE}/backup.env")"
     expect_eq "${label}: backup.env still sources to the exact passphrase" \
-      "$(bash -c '. "$1"; printf %s "${TAU_BACKUP_PASSPHRASE}"' _ "${BACKUP_ENV_TARGET}")" "${PASSPHRASE}"
+      "$(bash -c '. "$1"; printf %s "${FICUS_BACKUP_PASSPHRASE}"' _ "${BACKUP_ENV_TARGET}")" "${PASSPHRASE}"
     expect_eq "${label}: backup.env sources to the new secret key" \
-      "$(bash -c '. "$1"; printf %s "${TAU_BACKUP_S3_SECRET_KEY}"' _ "${BACKUP_ENV_TARGET}")" "${NEW_SK}"
+      "$(bash -c '. "$1"; printf %s "${FICUS_BACKUP_S3_SECRET_KEY}"' _ "${BACKUP_ENV_TARGET}")" "${NEW_SK}"
     expect_eq "${label}: tau-backup.sh mode/owner preserved" "$(mode_of "${BACKUP_SCRIPT_PATH}")" "${EXPECTED_SCRIPT_MODE}"
     expect_eq "${label}: backup.env mode/owner preserved" "$(mode_of "${BACKUP_ENV_TARGET}")" "${EXPECTED_ENV_MODE}"
     expect_eq "${label}: yaml backup.s3_endpoint" "$(yq -r '.backup.s3_endpoint' "${CONFIG}")" "${NEW_ENDPOINT}"
@@ -593,10 +625,10 @@ $(cat "${SCRATCH}/run1.err")"
   expect_eq 'run 1: exits zero' "${run1_rc}" 0
   [[ ${run1_rc} -eq 0 ]] || printf '%s\n' "${run1_all}" >&2
   expect_eq 'run 1: stdout is exactly the result markers' "${run1_stdout}" \
-    "TAU_RETARGET_BACKUP_RESULT=retargeted
-TAU_RETARGET_BACKUP_ENDPOINT=${NEW_ENDPOINT}
-TAU_RETARGET_BACKUP_REGION=${NEW_REGION}
-TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
+    "FICUS_RETARGET_BACKUP_RESULT=retargeted
+FICUS_RETARGET_BACKUP_ENDPOINT=${NEW_ENDPOINT}
+FICUS_RETARGET_BACKUP_REGION=${NEW_REGION}
+FICUS_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
   assert_no_secrets 'run 1' "${run1_all}"
   assert_retargeted 'run 1'
   assert_verified 'run 1'
@@ -612,7 +644,7 @@ TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
   : >"${SHIM_LOG}"
   run "${ARGS[@]}"
   expect_eq 'run 2 (idempotent re-run): exits zero' "${RC}" 0
-  expect_contains 'run 2: reports unchanged' "${OUT}" 'TAU_RETARGET_BACKUP_RESULT=unchanged'
+  expect_contains 'run 2: reports unchanged' "${OUT}" 'FICUS_RETARGET_BACKUP_RESULT=unchanged'
   assert_no_secrets 'run 2' "${OUT}"
   assert_retargeted 'run 2'
   assert_verified 'run 2 (still verifies)'
@@ -655,25 +687,25 @@ TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
     assert_no_secrets "${label}" "${OUT}"
     assert_untouched "${label}"
     [[ ${backups} == any ]] || expect_eq "${label}: backs nothing up" "$(backup_count)" "${backups}"
-    expect_not_contains "${label}: never reports success" "${OUT}" 'TAU_RETARGET_BACKUP_RESULT='
+    expect_not_contains "${label}: never reports success" "${OUT}" 'FICUS_RETARGET_BACKUP_RESULT='
   }
-  inject_untouched 'S3 refuses the new key (403)' 'failed verification — nothing was changed' 0 TAU_TEST_S3_STATUS=403
-  inject_untouched 'S3 unreachable (curl exit 7)' 'curl exit 7' 0 TAU_TEST_CURL_EXIT=7
-  inject_untouched 'short read of the live backup.env' "read of ${BACKUP_ENV_TARGET} came up short" 0 TAU_TEST_CAT_SHORT="${BACKUP_ENV_TARGET}"
-  inject_untouched 'short read of the live tau-backup.sh' "read of ${BACKUP_SCRIPT_PATH} came up short" 0 TAU_TEST_CAT_SHORT="${BACKUP_SCRIPT_PATH}"
-  inject_untouched 'read error on the secrets file' 'could not read --secrets file' 0 TAU_TEST_CAT_FAIL="${SECRETS}"
-  inject_untouched 'backing up backup.env fails' "could not back up ${BACKUP_ENV_TARGET} — nothing was changed" any TAU_TEST_FAIL_CP=backup.env
-  inject_untouched 'staging mktemp fails for backup.env' "could not stage the new ${BACKUP_ENV_TARGET} — nothing was changed" any TAU_TEST_FAIL_MKTEMP=.backup.env.
-  inject_untouched 'chmod of the staged tau-backup.sh fails' "could not stage the new ${BACKUP_SCRIPT_PATH} — nothing was changed" any TAU_TEST_FAIL_CHMOD=.tau-backup.sh.
-  inject_untouched 'chown of the staged backup.env fails' "could not stage the new ${BACKUP_ENV_TARGET} — nothing was changed" any TAU_TEST_FAIL_CHOWN=.backup.env.
-  inject_untouched 'installing tau-backup.sh (rename) fails' "could not install the new ${BACKUP_SCRIPT_PATH} — nothing was changed" any TAU_TEST_FAIL_MV=tau-backup.sh:1
+  inject_untouched 'S3 refuses the new key (403)' 'failed verification — nothing was changed' 0 FICUS_TEST_S3_STATUS=403
+  inject_untouched 'S3 unreachable (curl exit 7)' 'curl exit 7' 0 FICUS_TEST_CURL_EXIT=7
+  inject_untouched 'short read of the live backup.env' "read of ${BACKUP_ENV_TARGET} came up short" 0 FICUS_TEST_CAT_SHORT="${BACKUP_ENV_TARGET}"
+  inject_untouched 'short read of the live tau-backup.sh' "read of ${BACKUP_SCRIPT_PATH} came up short" 0 FICUS_TEST_CAT_SHORT="${BACKUP_SCRIPT_PATH}"
+  inject_untouched 'read error on the secrets file' 'could not read --secrets file' 0 FICUS_TEST_CAT_FAIL="${SECRETS}"
+  inject_untouched 'backing up backup.env fails' "could not back up ${BACKUP_ENV_TARGET} — nothing was changed" any FICUS_TEST_FAIL_CP=backup.env
+  inject_untouched 'staging mktemp fails for backup.env' "could not stage the new ${BACKUP_ENV_TARGET} — nothing was changed" any FICUS_TEST_FAIL_MKTEMP=.backup.env.
+  inject_untouched 'chmod of the staged tau-backup.sh fails' "could not stage the new ${BACKUP_SCRIPT_PATH} — nothing was changed" any FICUS_TEST_FAIL_CHMOD=.tau-backup.sh.
+  inject_untouched 'chown of the staged backup.env fails' "could not stage the new ${BACKUP_ENV_TARGET} — nothing was changed" any FICUS_TEST_FAIL_CHOWN=.backup.env.
+  inject_untouched 'installing tau-backup.sh (rename) fails' "could not install the new ${BACKUP_SCRIPT_PATH} — nothing was changed" any FICUS_TEST_FAIL_MV=tau-backup.sh:1
   inject_untouched 'installing backup.env fails after tau-backup.sh was swapped' \
-    "${BACKUP_SCRIPT_PATH} was restored to its previous content" any TAU_TEST_FAIL_MV=backup.env:1
+    "${BACKUP_SCRIPT_PATH} was restored to its previous content" any FICUS_TEST_FAIL_MV=backup.env:1
   if [[ -e /proc/self/fd/1 ]]; then
     inject_untouched 'the staged write of backup.env fails' "failed to write the staged replacement for ${BACKUP_ENV_TARGET}" any \
-      BASH_ENV="${FAIL_WRITE_ENV}" TAU_TEST_FAIL_WRITE=/.backup.env.
+      BASH_ENV="${FAIL_WRITE_ENV}" FICUS_TEST_FAIL_WRITE=/.backup.env.
     inject_untouched 'the staged write of tau-backup.sh fails' "failed to write the staged replacement for ${BACKUP_SCRIPT_PATH}" any \
-      BASH_ENV="${FAIL_WRITE_ENV}" TAU_TEST_FAIL_WRITE=/.tau-backup.sh.
+      BASH_ENV="${FAIL_WRITE_ENV}" FICUS_TEST_FAIL_WRITE=/.tau-backup.sh.
   else
     printf 'SKIP: staged-write injection needs /proc (Linux)\n' >&2
   fi
@@ -692,17 +724,17 @@ TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
     reset_fixture
     set_modes
     cp "${SCRATCH}/nonascii-backup.env" "${BACKUP_ENV_TARGET}"
-    before_line=$(grep '^TAU_BACKUP_PASSPHRASE=' "${BACKUP_ENV_TARGET}" | od -An -tx1 | tr -d ' \n')
+    before_line=$(grep '^FICUS_BACKUP_PASSPHRASE=' "${BACKUP_ENV_TARGET}" | od -An -tx1 | tr -d ' \n')
     RC=0
     OUT=$(LC_ALL=${loc} "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
     expect_eq "non-ASCII passphrase real run (caller LC_ALL=${loc}): exits zero" "${RC}" 0
     expect_eq "non-ASCII passphrase real run (caller LC_ALL=${loc}): passphrase line byte-identical" \
-      "$(grep '^TAU_BACKUP_PASSPHRASE=' "${BACKUP_ENV_TARGET}" | od -An -tx1 | tr -d ' \n')" "${before_line}"
+      "$(grep '^FICUS_BACKUP_PASSPHRASE=' "${BACKUP_ENV_TARGET}" | od -An -tx1 | tr -d ' \n')" "${before_line}"
     expect_eq "non-ASCII passphrase real run (caller LC_ALL=${loc}): sources to the exact bytes" \
-      "$(bash -c '. "$1"; printf %s "${TAU_BACKUP_PASSPHRASE}"' _ "${BACKUP_ENV_TARGET}" | od -An -tx1 | tr -d ' \n')" \
+      "$(bash -c '. "$1"; printf %s "${FICUS_BACKUP_PASSPHRASE}"' _ "${BACKUP_ENV_TARGET}" | od -An -tx1 | tr -d ' \n')" \
       "$(printf '%s' "${NONASCII_PASSPHRASE}" | od -An -tx1 | tr -d ' \n')"
     expect_eq "non-ASCII passphrase real run (caller LC_ALL=${loc}): new secret key installed" \
-      "$(bash -c '. "$1"; printf %s "${TAU_BACKUP_S3_SECRET_KEY}"' _ "${BACKUP_ENV_TARGET}")" "${NEW_SK}"
+      "$(bash -c '. "$1"; printf %s "${FICUS_BACKUP_S3_SECRET_KEY}"' _ "${BACKUP_ENV_TARGET}")" "${NEW_SK}"
     expect_not_contains "non-ASCII passphrase real run (caller LC_ALL=${loc}): never printed" "${OUT}" "${NONASCII_PASSPHRASE}"
   done
 
@@ -710,16 +742,16 @@ TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
   reset_fixture
   set_modes
   RC=0
-  OUT=$(TAU_TEST_HUP_ON_MV=tau-backup.sh "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
+  OUT=$(FICUS_TEST_HUP_ON_MV=tau-backup.sh "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
   expect_eq 'SIGHUP between the renames: the run still completes (exit 0)' "${RC}" 0
-  expect_contains 'SIGHUP between the renames: reports retargeted' "${OUT}" 'TAU_RETARGET_BACKUP_RESULT=retargeted'
+  expect_contains 'SIGHUP between the renames: reports retargeted' "${OUT}" 'FICUS_RETARGET_BACKUP_RESULT=retargeted'
   assert_retargeted 'SIGHUP between the renames'
   # ...and the default disposition is back afterwards: a SIGHUP during the
   # yaml step (after the swap block) terminates the script as usual.
   reset_fixture
   set_modes
   RC=0
-  OUT=$(TAU_TEST_HUP_ON_YQ_WRITE=1 "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
+  OUT=$(FICUS_TEST_HUP_ON_YQ_WRITE=1 "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
   expect_eq 'SIGHUP after the swap block: default disposition restored (killed, 128+1)' "${RC}" 129
   expect_eq 'SIGHUP after the swap block: both files were already swapped together' \
     "$(same "${BACKUP_SCRIPT_PATH}" "${SCRATCH}/expected-tau-backup.sh") $(same "${BACKUP_ENV_TARGET}" "${SCRATCH}/expected-backup.env")" 'same same'
@@ -729,7 +761,7 @@ TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
   reset_fixture
   set_modes
   RC=0
-  OUT=$(BASH_ENV="${HUP_TRAP_ENV}" TAU_TEST_HUP_ON_MV=tau-backup.sh TAU_TEST_HUP_ON_YQ_WRITE=1 "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
+  OUT=$(BASH_ENV="${HUP_TRAP_ENV}" FICUS_TEST_HUP_ON_MV=tau-backup.sh FICUS_TEST_HUP_ON_YQ_WRITE=1 "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
   expect_eq 'pre-existing HUP handler: the run completes' "${RC}" 0
   expect_contains 'pre-existing HUP handler: restored after the swap (it ran for the yaml-step SIGHUP)' "${OUT}" 'hup-handler-ran'
   assert_retargeted 'pre-existing HUP handler'
@@ -739,7 +771,7 @@ TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
   reset_fixture
   set_modes
   RC=0
-  OUT=$(TAU_TEST_FAIL_MV='backup.env:1 tau-backup.sh:2' "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
+  OUT=$(FICUS_TEST_FAIL_MV='backup.env:1 tau-backup.sh:2' "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
   expect_eq 'restore failure: exits 1' "${RC}" 1
   expect_contains 'restore failure: says the restore FAILED' "${OUT}" "FAILED to restore ${BACKUP_SCRIPT_PATH}"
   expect_match 'restore failure: names the backup to copy back' "${OUT}" "copy ${SCRATCH}/bin/tau-backup\\.sh\\.bak-[^ ]+ back over"
@@ -757,7 +789,7 @@ TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
   reset_fixture
   set_modes
   RC=0
-  OUT=$(TAU_TEST_FAIL_YQ_WRITE=1 "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
+  OUT=$(FICUS_TEST_FAIL_YQ_WRITE=1 "${RETARGET}" "${ARGS[@]}" 2>&1) || RC=$?
   expect_eq 'yaml write failure: exits 1' "${RC}" 1
   expect_contains 'yaml write failure: says the files ARE retargeted' "${OUT}" 'the backup files ARE retargeted'
   expect_eq 'yaml write failure: tau-backup.sh is the new render' "$(same "${BACKUP_SCRIPT_PATH}" "${SCRATCH}/expected-tau-backup.sh")" same
@@ -767,7 +799,7 @@ TAU_RETARGET_BACKUP_BUCKET=${NEW_BUCKET}"
   : >"${SHIM_LOG}"
   run "${ARGS[@]}"
   expect_eq 'yaml write failure, then re-run: exits zero' "${RC}" 0
-  expect_contains 'yaml write failure, then re-run: reports retargeted' "${OUT}" 'TAU_RETARGET_BACKUP_RESULT=retargeted'
+  expect_contains 'yaml write failure, then re-run: reports retargeted' "${OUT}" 'FICUS_RETARGET_BACKUP_RESULT=retargeted'
   assert_retargeted 'yaml write failure, then re-run'
   expect_eq 'yaml write failure, then re-run: backs up only the yaml' "$(backup_count)" "$((backups_before_rerun + 1))"
 else

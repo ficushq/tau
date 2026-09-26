@@ -66,6 +66,35 @@ describe('setup helper CI gate', () => {
   })
 })
 
+describe('env-prefix upgrade suite CI gate', () => {
+  test('runs the env-prefix upgrade suite AS ROOT, gated on its summary line and its ENABLED marker', () => {
+    const start = workflow.indexOf('- name: Run env-prefix upgrade suite (root)')
+    expect(start).toBeGreaterThan(-1)
+    const nextStep = workflow.indexOf('\n      - name:', start + 1)
+    const step = workflow.slice(start, nextStep === -1 ? undefined : nextStep)
+    expect(step).toContain('sudo env "PATH=$PATH" bash scripts/setup/env-prefix-upgrade.test.sh')
+    expect(step).toContain('passed, 0 failed') // summary-line gate
+    // The suite self-skips without root and the Ubuntu toolchain; a green
+    // summary alone cannot tell "executed" from "skipped".
+    expect(step).toContain('FICUS env-prefix upgrade section: ENABLED')
+    expect(step).not.toContain('continue-on-error')
+    expect(step).not.toContain('if:')
+  })
+
+  test('the suite emits the marker exactly once, only after every skip path has exited', () => {
+    const suite = readFileSync(join(import.meta.dir, '../scripts/setup/env-prefix-upgrade.test.sh'), 'utf8')
+    const marker = "echo 'FICUS env-prefix upgrade section: ENABLED'"
+    expect(suite.split(marker).length - 1).toBe(1)
+    const markerAt = suite.indexOf(marker)
+    const skipExit = suite.indexOf('if [[ -n ${skip_reason} ]]; then')
+    expect(skipExit).toBeGreaterThan(-1)
+    expect(markerAt).toBeGreaterThan(skipExit)
+    expect(suite.indexOf("[[ ${EUID} -eq 0 ]] || skip_reason='not running as root'")).toBeLessThan(markerAt)
+    // The run ends on the summary line CI gates on.
+    expect(suite.trimEnd().endsWith('\nsummary')).toBe(true)
+  })
+})
+
 describe('lib.test.sh root-install marker', () => {
   const libTest = readFileSync(join(import.meta.dir, '../scripts/setup/lib.test.sh'), 'utf8')
 
@@ -78,8 +107,8 @@ describe('lib.test.sh root-install marker', () => {
     expect(libTest.split(marker).length - 1).toBe(1) // exactly once
     // Structurally inside the probe's success branch: after the success
     // assignment, before the failure assignment.
-    const probeIf = libTest.indexOf('TAU_TEST_ROOT_INSTALL=1')
-    const probeElse = libTest.indexOf('TAU_TEST_ROOT_INSTALL=0')
+    const probeIf = libTest.indexOf('FICUS_TEST_ROOT_INSTALL=1')
+    const probeElse = libTest.indexOf('FICUS_TEST_ROOT_INSTALL=0')
     expect(probeIf).toBeGreaterThan(-1)
     expect(probeElse).toBeGreaterThan(probeIf)
     const markerAt = libTest.indexOf(marker)

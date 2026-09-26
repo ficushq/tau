@@ -73,7 +73,7 @@ function validateBunVersionAlignment(bunVersion: string, pins: SetupBunPin[]): s
 
 // The setup toolkit installs bun on hosts the repo checkout does not exist on
 // yet (tenant VMs, the control plane), so each script carries a literal
-// TAU_BUN_VERSION pin instead of reading .bun-version. Literals drift — an
+// FICUS_BUN_VERSION pin instead of reading .bun-version. Literals drift — an
 // UNPINNED `curl | bash` install in these very scripts took down provisioning
 // for every new tenant on 2026-08-13 when bun released 1.3.14 (broken .env
 // loading for `bun run db:migrate`). This gate makes the literals unable to
@@ -84,19 +84,19 @@ export function collectSetupScriptPins(): SetupBunPin[] {
   const pins: SetupBunPin[] = []
   for (const script of SETUP_SCRIPTS_WITH_BUN_PIN) {
     const source = readFileSync(join(repoRoot, script), 'utf8')
-    const matches = [...source.matchAll(/^\s*TAU_BUN_VERSION="([^"]*)"/gm)]
+    const matches = [...source.matchAll(/^\s*FICUS_BUN_VERSION="([^"]*)"/gm)]
     // A script with no pin at all means the literal was deleted (or renamed) —
     // which is indistinguishable from reverting to the unpinned install. Fail.
     if (matches.length === 0) {
-      pins.push({ file: script, job: 'TAU_BUN_VERSION (missing)', version: '' })
+      pins.push({ file: script, job: 'FICUS_BUN_VERSION (missing)', version: '' })
       continue
     }
     for (const match of matches) {
-      pins.push({ file: script, job: 'TAU_BUN_VERSION', version: match[1] })
+      pins.push({ file: script, job: 'FICUS_BUN_VERSION', version: match[1] })
     }
     // The pin is only load-bearing if the installer actually consumes it.
-    if (!source.includes('bash -s "bun-v${TAU_BUN_VERSION}"')) {
-      pins.push({ file: script, job: 'installer does not consume TAU_BUN_VERSION', version: '' })
+    if (!source.includes('bash -s "bun-v${FICUS_BUN_VERSION}"')) {
+      pins.push({ file: script, job: 'installer does not consume FICUS_BUN_VERSION', version: '' })
     }
   }
   return pins
@@ -141,7 +141,7 @@ describe('bun version pin', () => {
     // below. This pins the *representation* so a refactor cannot quietly turn
     // "pin deleted" into "script skipped".
     const errors = validateBunVersionAlignment('1.3.8', [
-      { file: 'scripts/setup/setup-host.sh', job: 'TAU_BUN_VERSION (missing)', version: '' },
+      { file: 'scripts/setup/setup-host.sh', job: 'FICUS_BUN_VERSION (missing)', version: '' },
     ])
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('setup-host.sh')

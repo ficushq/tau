@@ -2,7 +2,7 @@
 # Opt-in, disposable-host proof that systemd restarts tau-api after cgroup OOM.
 set -euo pipefail
 
-[[ ${TAU_API_MEMORY_E2E:-0} == 1 ]] || { echo 'Refusing: set TAU_API_MEMORY_E2E=1 on a disposable host' >&2; exit 2; }
+[[ ${FICUS_API_MEMORY_E2E:-0} == 1 ]] || { echo 'Refusing: set FICUS_API_MEMORY_E2E=1 on a disposable host' >&2; exit 2; }
 [[ ${EUID} -eq 0 ]] || { echo 'Refusing: must run as root' >&2; exit 2; }
 [[ $(ps -p 1 -o comm=) == systemd ]] || { echo 'Refusing: PID 1 is not systemd' >&2; exit 2; }
 [[ $(stat -fc %T /sys/fs/cgroup) == cgroup2fs ]] || { echo 'Refusing: cgroup v2 is required' >&2; exit 2; }

@@ -351,7 +351,7 @@ async function stagePrunedNodeModules(
 
 /**
  * Prove the artifact is usable without a database: extract it, run the bundled
- * migration runner with no `TAU_MIGRATE_LIVE` and no `DATABASE_URL` (its guard
+ * migration runner with no `FICUS_MIGRATE_LIVE` and no `DATABASE_URL` (its guard
  * must refuse — which it can only do if the bundle loaded and executed), then
  * re-hash every file in the manifest against the extracted tree.
  */
@@ -371,12 +371,20 @@ async function runSmoke(opts: {
 
     const migrate = await opts.run(['bun', join(treeRoot, 'apps/core/dist/migrate.js')], {
       cwd: join(treeRoot, 'apps/core'),
-      env: { DATABASE_URL: undefined, TAU_MIGRATE_LIVE: undefined, TAU_ROOT: undefined },
+      // Both spellings (Ficus rename): the in-process bridge would promote an
+      // inherited TAU_ name to FICUS_ and let the migration run.
+      env: {
+        DATABASE_URL: undefined,
+        FICUS_MIGRATE_LIVE: undefined,
+        FICUS_ROOT: undefined,
+        TAU_MIGRATE_LIVE: undefined, // legacy-env
+        TAU_ROOT: undefined, // legacy-env
+      },
     })
     const output = `${migrate.stdout}\n${migrate.stderr}`
     if (migrate.exitCode === 0) {
       throw new Error(
-        `smoke: the bundled migrate.js exited 0 without TAU_MIGRATE_LIVE; its guard must refuse.\n${output}`
+        `smoke: the bundled migrate.js exited 0 without FICUS_MIGRATE_LIVE; its guard must refuse.\n${output}`
       )
     }
     if (!/refus/i.test(output)) {
@@ -392,7 +400,7 @@ async function runSmoke(opts: {
     const coreDir = join(treeRoot, 'apps/core')
     const extensionSmoke = await opts.run(
       ['bun', join(coreDir, 'dist/smoke-configured-extensions.js'), extensionsDir, coreDir],
-      { cwd: coreDir, env: { TAU_ROOT: treeRoot } }
+      { cwd: coreDir, env: { FICUS_ROOT: treeRoot } }
     )
     if (extensionSmoke.exitCode !== 0) {
       throw new Error(

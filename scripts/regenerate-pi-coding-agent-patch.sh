@@ -71,8 +71,8 @@ done
 test -f "$PATCH_ARTIFACT" || { echo "Missing committed patch artifact" >&2; exit 1; }
 cp "$PATCH_ARTIFACT" "$ORIGINAL_PATCH"
 
-TAU_VERSION="$(node -p "require('./apps/core/package.json').dependencies['$PACKAGE']")"
-test "$TAU_VERSION" = 0.87.1 || { echo "Expected Tau dependency 0.87.1" >&2; exit 1; }
+FICUS_VERSION="$(node -p "require('./apps/core/package.json').dependencies['$PACKAGE']")"
+test "$FICUS_VERSION" = 0.87.1 || { echo "Expected Tau dependency 0.87.1" >&2; exit 1; }
 
 manifest_outputs() {
   local root="$1"
@@ -136,7 +136,7 @@ update(root);
 NODE
   mkdir -p "$pack/ai" "$pack/coding"
   local ai_tarball="$pack/ai/earendil-works-pi-ai-0.87.1.tgz"
-  curl --fail --silent --show-error --location "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-$TAU_VERSION.tgz" --output "$ai_tarball"
+  curl --fail --silent --show-error --location "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-$FICUS_VERSION.tgz" --output "$ai_tarball"
   test "$(sha1sum "$ai_tarball" | cut -d' ' -f1)" = "$EXPECTED_AI_TARBALL_SHA1"
   tar -xzf "$ai_tarball" -C "$pack/ai"
   mkdir -p "$dir/packages/ai/src/providers/data"
@@ -144,7 +144,7 @@ NODE
   cp "$pack/ai/package/dist/providers/data/.manifest.json" "$dir/packages/ai/src/providers/data/"
 
   local coding_tarball="$pack/coding/earendil-works-pi-coding-agent-0.87.1.tgz"
-  curl --fail --silent --show-error --location "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-$TAU_VERSION.tgz" --output "$coding_tarball"
+  curl --fail --silent --show-error --location "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-$FICUS_VERSION.tgz" --output "$coding_tarball"
   test "$(sha1sum "$coding_tarball" | cut -d' ' -f1)" = "$EXPECTED_CODING_AGENT_TARBALL_SHA1"
   tar -xzf "$coding_tarball" -C "$pack/coding"
   mv "$pack/coding/package" "$pristine_package"
@@ -216,7 +216,7 @@ if cmp -s "$ORIGINAL_PATCH" "$GENERATED_PATCH_A"; then
 fi
 if [[ "$WRITE_MODE" -eq 1 ]]; then
   cp "$GENERATED_PATCH_A" "$PATCH_ARTIFACT"
-  echo "Regenerated patch for $PACKAGE@$TAU_VERSION (--write)"
+  echo "Regenerated patch for $PACKAGE@$FICUS_VERSION (--write)"
   exit 0
 fi
 echo "Regenerated Pi patch drifted from the committed artifact" >&2

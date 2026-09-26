@@ -115,7 +115,7 @@ cat >"${SHIM_DIR}/journalctl" <<'SHIM'
 exit 0
 SHIM
 
-# Passes through to the REAL install(1) unless TAU_TEST_FAIL_KEY_INSTALL is
+# Passes through to the REAL install(1) unless FICUS_TEST_FAIL_KEY_INSTALL is
 # set, in which case it fails ONLY a call installing a file named
 # `origin.key` — the failure-injection case below (install_origin_cert's
 # SECOND `as_root install` call, lib.sh's key install). Everything else
@@ -125,7 +125,7 @@ SHIM
 # file (dry-run, validation, and mutation runs 1-2) is unaffected.
 cat >"${SHIM_DIR}/install" <<'SHIM'
 #!/usr/bin/env bash
-if [[ -n ${TAU_TEST_FAIL_KEY_INSTALL:-} ]]; then
+if [[ -n ${FICUS_TEST_FAIL_KEY_INSTALL:-} ]]; then
   for arg in "$@"; do
     [[ $(basename -- "${arg}") == origin.key ]] && exit 1
   done
@@ -133,14 +133,14 @@ fi
 exec /usr/bin/install "$@"
 SHIM
 
-# Passes through to the real cp unless TAU_TEST_FAIL_KEY_RESTORE is set, in
+# Passes through to the real cp unless FICUS_TEST_FAIL_KEY_RESTORE is set, in
 # which case it fails ONLY a copy whose destination is named exactly
 # `origin.key` — retarget-origin.sh's post-failure key RESTORE. The
 # pre-install backup (destination origin.key.bak-…) is unaffected. Off by
 # default.
 cat >"${SHIM_DIR}/cp" <<'SHIM'
 #!/usr/bin/env bash
-if [[ -n ${TAU_TEST_FAIL_KEY_RESTORE:-} && $(basename -- "${@: -1}") == origin.key ]]; then
+if [[ -n ${FICUS_TEST_FAIL_KEY_RESTORE:-} && $(basename -- "${@: -1}") == origin.key ]]; then
   exit 1
 fi
 exec /bin/cp "$@"
@@ -174,7 +174,7 @@ ingress:
 dns:
   zone: hiretau.ai
 EOF
-printf 'APP_URL=https://acme.hiretau.ai\nTAU_WEB_ORIGIN=https://acme.hiretau.ai\nTAU_ENCRYPTION_KEY=deadbeef\n' >"${CORE_DEST}/.env"
+printf 'APP_URL=https://acme.hiretau.ai\nFICUS_WEB_ORIGIN=https://acme.hiretau.ai\nFICUS_ENCRYPTION_KEY=deadbeef\n' >"${CORE_DEST}/.env"
 CONFIG_BYTES_BEFORE=$(cat "${CONFIG}")
 ENV_BYTES_BEFORE=$(cat "${CORE_DEST}/.env")
 
@@ -198,9 +198,9 @@ expect_match '--dry-run plans the new core.origin' "${dry_run_out}" 'core\.origi
 expect_match '--dry-run plans ingress.tls_cert_path' "${dry_run_out}" "ingress\\.tls_cert_path: ${CERT//\//\\/}"
 expect_match '--dry-run plans ingress.tls_key_path' "${dry_run_out}" "ingress\\.tls_key_path: ${KEY//\//\\/}"
 expect_match '--dry-run plans dns.zone' "${dry_run_out}" 'dns\.zone: ficus\.sh'
-expect_match '--dry-run plans core.env.TAU_PLATFORM_INGEST_URL' "${dry_run_out}" 'TAU_PLATFORM_INGEST_URL: https://ficus\.sh'
+expect_match '--dry-run plans core.env.FICUS_PLATFORM_INGEST_URL' "${dry_run_out}" 'FICUS_PLATFORM_INGEST_URL: https://ficus\.sh'
 expect_match '--dry-run plans the .env rewrite' "${dry_run_out}" 'APP_URL=https://acme\.ficus\.sh'
-expect_match '--dry-run plans TAU_WEB_ORIGIN' "${dry_run_out}" 'TAU_WEB_ORIGIN=https://acme\.ficus\.sh'
+expect_match '--dry-run plans FICUS_WEB_ORIGIN' "${dry_run_out}" 'FICUS_WEB_ORIGIN=https://acme\.ficus\.sh'
 expect_match '--dry-run names the derived Caddy host' "${dry_run_out}" 'caddy — host acme\.ficus\.sh'
 expect_match '--dry-run mentions the Caddyfile path it would write' "${dry_run_out}" "write ${CADDYFILE_PATH//\//\\/} "
 expect_eq '--dry-run does not modify the config file' "$(cat "${CONFIG}")" "${CONFIG_BYTES_BEFORE}"
@@ -235,6 +235,22 @@ run_err() { # ...ARGS
   # shellcheck disable=SC2069
   "${RETARGET}" "$@" 2>&1 >/dev/null || true
 }
+
+# --- a host that was never renamed (Ficus): refused before anything changes --
+# retarget-origin.sh reads and writes FICUS_* names only; on a host still on
+# TAU_* ones it must stop before touching the yaml, the .env or Caddy.
+printf 'APP_URL=https://acme.hiretau.ai\nTAU_WEB_ORIGIN=https://acme.hiretau.ai\nTAU_ENCRYPTION_KEY=deadbeef\n' >"${CORE_DEST}/.env" # legacy-env
+TAU_ENV_BYTES=$(cat "${CORE_DEST}/.env")
+for tau_mode in --dry-run real; do
+  tau_args=(--config "${CONFIG}" --origin https://acme.ficus.sh --tls-cert "${CERT}" --tls-key "${KEY}")
+  [[ ${tau_mode} == --dry-run ]] && tau_args+=(--dry-run)
+  expect_eq "TAU host (${tau_mode}): exits non-zero" "$(run_rc "${tau_args[@]}")" '1'
+  expect_match "TAU host (${tau_mode}): says why" "$(run_err "${tau_args[@]}")" 'this host still uses TAU_\* settings'
+  expect_eq "TAU host (${tau_mode}): the config is untouched" "$(cat "${CONFIG}")" "${CONFIG_BYTES_BEFORE}"
+  expect_eq "TAU host (${tau_mode}): the .env is untouched" "$(cat "${CORE_DEST}/.env")" "${TAU_ENV_BYTES}"
+  expect_eq "TAU host (${tau_mode}): no Caddyfile was written" "$([[ -e ${CADDYFILE_PATH} ]] && echo exists || echo absent)" 'absent'
+done
+printf '%s\n' "${ENV_BYTES_BEFORE}" >"${CORE_DEST}/.env"
 
 expect_eq 'http origin: exits non-zero' \
   "$(run_rc --config "${CONFIG}" --origin http://acme.ficus.sh --tls-cert "${CERT}" --tls-key "${KEY}" --dry-run)" '1'
@@ -395,7 +411,7 @@ EOF
   # is exactly the drift the health-check-port fix targets: the Caddyfile's
   # reverse_proxy target, and the port the health check probes, must come
   # from the running .env, not the yaml default.
-  printf '# a comment\nAPP_URL=https://acme.hiretau.ai\n\nTAU_WEB_ORIGIN=https://acme.hiretau.ai\nPORT=4100\nTAU_ENCRYPTION_KEY=deadbeef\n' >"${MUT}/core/.env"
+  printf '# a comment\nAPP_URL=https://acme.hiretau.ai\n\nFICUS_WEB_ORIGIN=https://acme.hiretau.ai\nPORT=4100\nFICUS_ENCRYPTION_KEY=deadbeef\n' >"${MUT}/core/.env"
 
   # A pre-existing "old" cert at the canonical (scratch) path, so the
   # cert-backup-before-install fix has something real to back up.
@@ -422,19 +438,19 @@ EOF
     expect_eq "${label}: yaml ingress.tls_cert_path rewritten" "$(yq -r '.ingress.tls_cert_path' "${MUT_CONFIG}")" "${MUT_NEW_CERT}"
     expect_eq "${label}: yaml ingress.tls_key_path rewritten" "$(yq -r '.ingress.tls_key_path' "${MUT_CONFIG}")" "${MUT_NEW_KEY}"
     expect_eq "${label}: yaml dns.zone rewritten" "$(yq -r '.dns.zone' "${MUT_CONFIG}")" 'ficus.sh'
-    expect_eq "${label}: yaml core.env.TAU_PLATFORM_INGEST_URL rewritten" \
-      "$(yq -r '.core.env.TAU_PLATFORM_INGEST_URL' "${MUT_CONFIG}")" 'https://ficus.sh'
+    expect_eq "${label}: yaml core.env.FICUS_PLATFORM_INGEST_URL rewritten" \
+      "$(yq -r '.core.env.FICUS_PLATFORM_INGEST_URL' "${MUT_CONFIG}")" 'https://ficus.sh'
     expect_eq "${label}: yaml source.repo untouched" "$(yq -r '.source.repo' "${MUT_CONFIG}")" 'git@example.com:acme/tau.git'
     expect_eq "${label}: yaml source.dest untouched" "$(yq -r '.source.dest' "${MUT_CONFIG}")" "${MUT}/core"
 
     expect_match "${label}: .env APP_URL rewritten" "$(cat "${MUT}/core/.env")" 'APP_URL=https://acme\.ficus\.sh'
-    expect_match "${label}: .env TAU_WEB_ORIGIN rewritten" "$(cat "${MUT}/core/.env")" 'TAU_WEB_ORIGIN=https://acme\.ficus\.sh'
-    expect_match "${label}: .env TAU_PLATFORM_INGEST_URL rewritten" "$(cat "${MUT}/core/.env")" 'TAU_PLATFORM_INGEST_URL=https://ficus\.sh'
+    expect_match "${label}: .env FICUS_WEB_ORIGIN rewritten" "$(cat "${MUT}/core/.env")" 'FICUS_WEB_ORIGIN=https://acme\.ficus\.sh'
+    expect_match "${label}: .env FICUS_PLATFORM_INGEST_URL rewritten" "$(cat "${MUT}/core/.env")" 'FICUS_PLATFORM_INGEST_URL=https://ficus\.sh'
     # Every OTHER .env line, byte-for-byte: the comment, the blank line, the
     # untouched PORT, and the untouched secret.
     expect_has_line "${label}: .env comment preserved" "$(cat "${MUT}/core/.env")" '# a comment'
     expect_has_line "${label}: .env PORT untouched" "$(cat "${MUT}/core/.env")" 'PORT=4100'
-    expect_has_line "${label}: .env secret untouched" "$(cat "${MUT}/core/.env")" 'TAU_ENCRYPTION_KEY=deadbeef'
+    expect_has_line "${label}: .env secret untouched" "$(cat "${MUT}/core/.env")" 'FICUS_ENCRYPTION_KEY=deadbeef'
     # The strongest form of "every other line byte-for-byte": the WHOLE file,
     # line order (including the blank line) and all, is exactly this.
     expect_eq "${label}: .env is exactly the expected content, in order" \
@@ -442,10 +458,10 @@ EOF
       '# a comment
 APP_URL=https://acme.ficus.sh
 
-TAU_WEB_ORIGIN=https://acme.ficus.sh
+FICUS_WEB_ORIGIN=https://acme.ficus.sh
 PORT=4100
-TAU_ENCRYPTION_KEY=deadbeef
-TAU_PLATFORM_INGEST_URL=https://ficus.sh'
+FICUS_ENCRYPTION_KEY=deadbeef
+FICUS_PLATFORM_INGEST_URL=https://ficus.sh'
 
     expect_eq "${label}: the new cert bytes were installed" "$(cat "${CADDY_TLS_DIR}/origin.crt")" "${NEW_CERT_BYTES}"
     expect_eq "${label}: the new key bytes were installed" "$(cat "${CADDY_TLS_DIR}/origin.key")" "${NEW_KEY_BYTES}"
@@ -520,13 +536,13 @@ TAU_PLATFORM_INGEST_URL=https://ficus.sh'
     -keyout "${FAIL_NEW_KEY}" -out "${FAIL_NEW_CERT}" >/dev/null 2>&1
 
   : >"${SHIM_LOG}"
-  export TAU_TEST_FAIL_KEY_INSTALL=1
+  export FICUS_TEST_FAIL_KEY_INSTALL=1
   fail_rc=0
   fail_out=$(
     "${RETARGET}" --config "${MUT_CONFIG}" --origin https://acme.ficus.sh \
       --tls-cert "${FAIL_NEW_CERT}" --tls-key "${FAIL_NEW_KEY}" 2>&1
   ) || fail_rc=$?
-  unset TAU_TEST_FAIL_KEY_INSTALL
+  unset FICUS_TEST_FAIL_KEY_INSTALL
 
   expect_eq 'failure injection: a failing key install exits non-zero' "${fail_rc}" '1'
   expect_match 'failure injection: names the failure and the rollback' "${fail_out}" 'steps 3-5 failed'
@@ -553,13 +569,13 @@ TAU_PLATFORM_INGEST_URL=https://ficus.sh'
   # name the key path — never claim the certificate was rolled back.
   # ===========================================================================
   : >"${SHIM_LOG}"
-  export TAU_TEST_FAIL_KEY_INSTALL=1 TAU_TEST_FAIL_KEY_RESTORE=1
+  export FICUS_TEST_FAIL_KEY_INSTALL=1 FICUS_TEST_FAIL_KEY_RESTORE=1
   restore_fail_rc=0
   restore_fail_out=$(
     "${RETARGET}" --config "${MUT_CONFIG}" --origin https://acme.ficus.sh \
       --tls-cert "${FAIL_NEW_CERT}" --tls-key "${FAIL_NEW_KEY}" 2>&1
   ) || restore_fail_rc=$?
-  unset TAU_TEST_FAIL_KEY_INSTALL TAU_TEST_FAIL_KEY_RESTORE
+  unset FICUS_TEST_FAIL_KEY_INSTALL FICUS_TEST_FAIL_KEY_RESTORE
 
   expect_eq 'restore-failure injection: exits non-zero' "${restore_fail_rc}" '1'
   expect_match 'restore-failure injection: says the restore FAILED' "${restore_fail_out}" 'FAILED to restore the previous origin certificate/key'
